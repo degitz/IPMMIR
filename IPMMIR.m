@@ -153,27 +153,27 @@ for s = 1:S
 
     fprintf('\nTesting the following degree range(s) with a %i degree step size:\n', a(s))
 
-    % Determine if any groups overlap
+    % Check for overlapping ranges
     ccheck = false(length(Bi_all), 1);
-    Rbase = R(:,Bi_all); % angle base
-    Rmax = Rbase + ar(s)/2; % angle max
-    Rmin = Rbase - ar(s)/2; % angle min
 
-    % Correct for 360 values
-    Rmax(Rmax==360) = 0;
+    % Display data
     r = zeros(6, length(Bi_all));
 
     % Find all rotation angles with no repeats
     for m = 1:length(Bi_all)
-        % Obtain rotation angles
-        rx = (R(1,Bi_all(m))-ar(s)/2):a(s):(R(1,Bi_all(m))+ar(s)/2);
-        ry = (R(2,Bi_all(m))-ar(s)/2):a(s):(R(2,Bi_all(m))+ar(s)/2);
-        rz = (R(3,Bi_all(m))-ar(s)/2):a(s):(R(3,Bi_all(m))+ar(s)/2);
-
         % Skips for overlapping groups
         if ccheck(m) == true
             continue
         end
+
+        % Obtain rotation angles
+        rx = (R(1,Bi_all(m))-ar(s)/2):a(s):(R(1,Bi_all(m))+ar(s)/2);
+        ry = (R(2,Bi_all(m))-ar(s)/2):a(s):(R(2,Bi_all(m))+ar(s)/2);
+        rz = (R(3,Bi_all(m))-ar(s)/2):a(s):(R(3,Bi_all(m))+ar(s)/2);
+        Rint1x = repmat(rx, 1, length(ry)*length(rz)); Rint1x = sort(Rint1x);
+        Rint1y = repmat(ry, 1, length(rz)); Rint1y = sort(Rint1y); Rint1y = repmat(Rint1y, 1, length(rx));
+        Rint1z = repmat(rz, 1, length(rx)*length(ry));
+        Rint1 = [Rint1x; Rint1y; Rint1z];
 
         if m < length(Bi_all)
             for l = 1:(length(Bi_all)-m)
@@ -181,62 +181,43 @@ for s = 1:S
                 if ccheck(m+l) == true
                     continue
                 else
-                    % Create testing variables
-                    % Find equal angles
-                    Tequ = Rbase(:,m+l) == Rbase(:,m);
-                    % Find basic intersections (min of next group is smaller than max of current group & max of next group is larger than min of current group)
-                    % In this instance, current group stops where next group stops
-                    Tint1 = (Rmin(:,m+l) <= Rmax(:,m)).*(1-Tequ); Tint1 = (Tint1.*(Rmax(:,m+l) > Rmin(:,m))) > 0;
-                    % Find advanced intersections (min/max of next group is smaller than min/max of current group) to deal with negative & 360 issues
-                    % In this instance, current group starts where next group starts
-                    Tint2 = Rmin(:,m+l) <= Rmin(:,m); Tint2 = (((Tint2 + (Rmax(:,m+l) <= Rmax(:,m))) > 0).*(1-Tequ)) > 0; 
+                    % Obtain rotation angles for testing range
+                    rx2 = (R(1,Bi_all(m+l))-ar(s)/2):a(s):(R(1,Bi_all(m+l))+ar(s)/2);
+                    ry2 = (R(2,Bi_all(m+l))-ar(s)/2):a(s):(R(2,Bi_all(m+l))+ar(s)/2);
+                    rz2 = (R(3,Bi_all(m+l))-ar(s)/2):a(s):(R(3,Bi_all(m+l))+ar(s)/2);
+                    Rint2x = repmat(rx2, 1, length(ry2)*length(rz2)); Rint2x = sort(Rint2x);
+                    Rint2y = repmat(ry2, 1, length(rz2)); Rint2y = sort(Rint2y); Rint2y = repmat(Rint2y, 1, length(rx2));
+                    Rint2z = repmat(rz2, 1, length(rx2)*length(ry2));
+                    Rint2 = [Rint2x; Rint2y; Rint2z];
 
-                    % Check for & resolve intersects
-                    if sum(Tint1)+sum(Tequ) == 3
-                        % Update ranges
-                        rx = (R(1,Bi_all(m))-ar(s)/2):a(s):(R(1,Bi_all(m+Tint1(1)*l))+ar(s)/2); % start at current group, stop at next group
-                        ry = (R(2,Bi_all(m))-ar(s)/2):a(s):(R(2,Bi_all(m+Tint1(2)*l))+ar(s)/2);
-                        rz = (R(3,Bi_all(m))-ar(s)/2):a(s):(R(3,Bi_all(m+Tint1(3)*l))+ar(s)/2);
-
+                    % Check for intersection point
+                    [Int, int1, int2] = intersect(Rint1.', Rint2.', 'rows', 'stable');
+                    if ~isempty(Int)
                         % Add check
                         ccheck(m+l) = true;
 
-                        % Update evaluators 
-                        Rmax(:,m) = Rmax(:,m+l);
-                        Rbase(:,m) = ((Rmax(:,m) - Rmin(:,m))./2) + Rmin(:,m);
-                    elseif sum(Tint2)+sum(Tequ) == 3
-                        % Correct for any wraps
-                        corr = R(:,Bi_all(m+l)) - (Tint2.*360);
-
                         % Update ranges
-                        rx = (corr(1)-ar(s)/2):a(s):(R(1,Bi_all(m))+ar(s)/2); % start at next group, start at current group
-                        ry = (corr(2)-ar(s)/2):a(s):(R(2,Bi_all(m))+ar(s)/2);
-                        rz = (corr(3)-ar(s)/2):a(s):(R(3,Bi_all(m))+ar(s)/2);
-
-                        % Add check
-                        ccheck(m+l) = true;
-
-                        % Update evaluators
-                        Rmin(:,m) = Rmin(:,m+l);
-                        Rbase(:,m) = ((Rmax(:,m) - Rmin(:,m))./2) + Rmin(:,m);
+                        Rint = union(Rint1.', Rint2.', 'rows', 'stable');
+                        rx = min(Rint(:,1)):a(s):max(Rint(:,1));
+                        ry = min(Rint(:,2)):a(s):max(Rint(:,2));
+                        rz = min(Rint(:,3)):a(s):max(Rint(:,3));
+                        Rint1x = repmat(rx, 1, length(ry)*length(rz)); Rint1x = sort(Rint1x);
+                        Rint1y = repmat(ry, 1, length(rz)); Rint1y = sort(Rint1y); Rint1y = repmat(Rint1y, 1, length(rx));
+                        Rint1z = repmat(rz, 1, length(rx)*length(ry));
+                        Rint1 = [Rint1x; Rint1y; Rint1z];
                     end
                 end
             end
         end
 
-        % Obtain rotation angles
-        Rx = repmat(rx, 1, length(ry)*length(rz)); Rx = sort(Rx);
-        Ry = repmat(ry, 1, length(rz)); Ry = sort(Ry); Ry = repmat(Ry, 1, length(rx));
-        Rz = repmat(rz, 1, length(rx)*length(ry));
-
         % Catalog new angles
         if m == 1
-            Rnew = [Rx; Ry; Rz];
+            Rnew = Rint1;
         else
-            Rnew = horzcat(Rnew, [Rx; Ry; Rz]); %#ok<AGROW>
+            Rnew = horzcat(Rnew, Rint1); %#ok<AGROW>
         end
 
-        r(:,m) = [rx(1), ry(1), rz(1), rx(end), ry(end), rz(end)];
+        r(:,m) = [min(rx), min(ry), min(rz), max(rx), max(ry), max(rz)];
         r(r<0) = 360 + r(r<0);
         fprintf("      (%i, %i, %i) to (%i, %i, %i)\n", r(1,m), r(2,m), r(3,m), r(4,m), r(5,m), r(6,m))
     end
@@ -340,6 +321,7 @@ for s = 1:S
 end
 
 %% Show best FOV
+
 % For display
 B = Bi_all;
 tform = affinetform3d(rigidtform3d(squeeze(R(:,B).'), [0 0 0]));
