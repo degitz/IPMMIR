@@ -16,12 +16,11 @@ res = 0.069447; % resolution, mm
 thresh = 0.25; % uCT mask threshold
 roipad = 20; % roi padding
 ipmethod = 'linear';  % interpolation method
-rsval = [ 64,  96, 128]; % resize value
-a =     [ 30,  10,   2,   1]; % rotation resolutions & ranges for transformation
-ar =    [360,  60,  12,   6];
-numE =         [5,   4,   3]; % number of local extrema from previous iteration to test
-nume = 10; % number of local extrema before intersection
-S = length(a); % number of iterations
+rsval = [  64,  96, 128     ]; % resize value
+a =     [  30,  10,   2,   1,   1]; % rotation resolutions & ranges for transformation
+ar =    [ 360,  60,  12,   6,   2];
+numE =  [        5,   4,   3]; % number of local extrema from previous iteration to test
+S = length(a)-1; % number of iterations
 
 % Add last index in numE. Just acts as placeholder as we only want 1 output angle
 numE = [numE, 1];
@@ -37,7 +36,7 @@ m_fs_mri = circshift(m_fs_mri, se_offset, 1);
 % Apply mask
 i_fs_mri = abs(i_fs_mri.*m_fs_mri);
 % Translate to center
-[~, ~, diff] = CentShift(m_fs_mri, i_fs_mri);
+[diff, ~, ~] = CentShift(i_fs_mri, m_fs_mri);
 i_fs_mri = circshift(i_fs_mri, [diff 0]); m_fs_mri = circshift(m_fs_mri, [diff 0]);
 
 fov = P.FOV.fov.ro*10; % field of view, mm
@@ -64,12 +63,15 @@ for i = 1:3
     end
 end
 
-clear diff i fov m m_name im_name res arrpad P
+clear diff i fov m m_name im_name arrpad P
 
 %% Create binary mask for uCT
 % Downscale data
 % uct_im_nt = downscale3D(uct_im_fr, size(mri_im_3D)); % 'not transformed' uCT image
 i_fs_uct = Norm01(imresize3(i_og_uct, [size(i_fs_mri,1) size(i_fs_mri,1) size(i_fs_mri,1)]));
+
+% Keep unmasked image for final analysis
+i_fsum_uct = i_fs_uct;
 
 % Create basic mask
 m_fs_uct = i_fs_uct > thresh;
@@ -121,14 +123,19 @@ end
 
 % Apply trim to images
 i_fs_mri = ROITrim(i_fs_mri, size(m_fs_mri));
-i_fs_uct = ROITrim(i_fs_uct, size(m_fs_uct));
+[i_fs_uct, roi] = ROITrim(i_fs_uct, size(m_fs_uct));
 
 % Lastly, center data in 3D space
 % Note: it is important to center the data after the ROI is trimmed. If
 % done so beforehand, the ROI trimming will off-center the volume to ensure
 % equal padding on all sides
-[m_fs_mri, i_fs_mri, ~] = CentShift(m_fs_mri, i_fs_mri);
-[m_fs_uct, i_fs_uct, ~] = CentShift(m_fs_uct, i_fs_uct);
+[diff, ~, ~] = CentShift(squeeze(sum(i_fs_mri,3)), squeeze(sum(m_fs_mri,3))>0);
+i_fs_mri = circshift(i_fs_mri, [diff 0]); m_fs_mri = circshift(m_fs_mri, [diff 0]);
+[diff, i_fs_uct, m_fs_uct] = CentShift(i_fs_uct, m_fs_uct);
+
+% Also apply shift & trim to unmasked data
+i_fsum_uct = i_fsum_uct(roi(1,1):roi(1,2), roi(2,1):roi(2,2), roi(3,1):roi(3,2));
+i_fsum_uct = circshift(i_fsum_uct, diff);
 
 fprintf('\nFinished loading & pre-processing data.\n')
 
@@ -137,7 +144,7 @@ toc
 clear roidiff
 
 %% Transform & Evaluate
-Bi_all = 1; R = [180; 180; 180]; a_dsc = []; a_RMSE = []; fr = []; % initial
+Bi_met = 1; R = [180; 180; 180]; a_met = []; fr = []; % initial
 
 for s = 1:S
     fprintf('\n--------------------------- Phase %i ---------------------------\n', s)
@@ -155,46 +162,46 @@ for s = 1:S
     Rin = imref3d(size(i_test_uct));
 
     % Sort ranges according to index. Should make finding overlaps easier
-    Bi_all = sort(Bi_all, 'ascend');
+    Bi_met = sort(Bi_met, 'ascend');
 
-    fprintf('\nTesting the following degree range(s) with a %i degree step size:\n', a(s))
+    fprintf('Testing the following degree range(s) with a %i degree step size:\n', a(s))
 
     % Check for overlapping ranges
-    ccheck = false(length(Bi_all), 1);
+    ccheck = false(length(Bi_met), 1);
 
     % Find all rotation angles with no repeats
-    for m = 1:length(Bi_all)
+    for m = 1:length(Bi_met)
         % Skip overlapping groups already merged 
         if ccheck(m) == true
             continue
         end
 
         % Obtain rotation angles
-        rx = (R(1,Bi_all(m))-ar(s)/2):a(s):(R(1,Bi_all(m))+ar(s)/2);
-        ry = (R(2,Bi_all(m))-ar(s)/2):a(s):(R(2,Bi_all(m))+ar(s)/2);
-        rz = (R(3,Bi_all(m))-ar(s)/2):a(s):(R(3,Bi_all(m))+ar(s)/2);
-        Rintx = repmat(rx, 1, length(ry)*length(rz)); Rintx = sort(Rintx);
-        Rinty = repmat(ry, 1, length(rz)); Rinty = sort(Rinty); Rinty = repmat(Rinty, 1, length(rx));
-        Rintz = repmat(rz, 1, length(rx)*length(ry));
-        Rint1 = [Rintx; Rinty; Rintz];
+        rx = (R(1,Bi_met(m))-ar(s)/2):a(s):(R(1,Bi_met(m))+ar(s)/2);
+        ry = (R(2,Bi_met(m))-ar(s)/2):a(s):(R(2,Bi_met(m))+ar(s)/2);
+        rz = (R(3,Bi_met(m))-ar(s)/2):a(s):(R(3,Bi_met(m))+ar(s)/2);
+        Rx = repmat(rx, 1, length(ry)*length(rz)); Rx = sort(Rx);
+        Ry = repmat(ry, 1, length(rz)); Ry = sort(Ry); Ry = repmat(Ry, 1, length(rx));
+        Rz = repmat(rz, 1, length(rx)*length(ry));
+        Rtest1 = [Rx; Ry; Rz];
 
-        if m < length(Bi_all)
-            for l = 1:(length(Bi_all)-m)
+        if m < length(Bi_met)
+            for l = 1:(length(Bi_met)-m)
                 % Skip checks with already combined groups
                 if ccheck(m+l) == true
                     continue
                 else
                     % Obtain rotation angles for testing range
-                    rx = (R(1,Bi_all(m+l))-ar(s)/2):a(s):(R(1,Bi_all(m+l))+ar(s)/2);
-                    ry = (R(2,Bi_all(m+l))-ar(s)/2):a(s):(R(2,Bi_all(m+l))+ar(s)/2);
-                    rz = (R(3,Bi_all(m+l))-ar(s)/2):a(s):(R(3,Bi_all(m+l))+ar(s)/2);
-                    Rintx = repmat(rx, 1, length(ry)*length(rz)); Rintx = sort(Rintx);
-                    Rinty = repmat(ry, 1, length(rz)); Rinty = sort(Rinty); Rinty = repmat(Rinty, 1, length(rx));
-                    Rintz = repmat(rz, 1, length(rx)*length(ry));
-                    Rint2 = [Rintx; Rinty; Rintz];
+                    rx = (R(1,Bi_met(m+l))-ar(s)/2):a(s):(R(1,Bi_met(m+l))+ar(s)/2);
+                    ry = (R(2,Bi_met(m+l))-ar(s)/2):a(s):(R(2,Bi_met(m+l))+ar(s)/2);
+                    rz = (R(3,Bi_met(m+l))-ar(s)/2):a(s):(R(3,Bi_met(m+l))+ar(s)/2);
+                    Rx = repmat(rx, 1, length(ry)*length(rz)); Rx = sort(Rx);
+                    Ry = repmat(ry, 1, length(rz)); Ry = sort(Ry); Ry = repmat(Ry, 1, length(rx));
+                    Rz = repmat(rz, 1, length(rx)*length(ry));
+                    Rtest2 = [Rx; Ry; Rz];
 
                     % Check for intersection point
-                    [Int, int1, int2] = intersect(Rint1.', Rint2.', 'rows', 'stable');
+                    [Int, int1, int2] = intersect(Rtest1.', Rtest2.', 'rows', 'stable');
                     if ~isempty(Int)
                         % Add check
                         ccheck(m+l) = true;
@@ -208,8 +215,8 @@ for s = 1:S
                         % Rint1y = repmat(ry, 1, length(rz)); Rint1y = sort(Rint1y); Rint1y = repmat(Rint1y, 1, length(rx));
                         % Rint1z = repmat(rz, 1, length(rx)*length(ry));
                         % Rint1 = [Rint1x; Rint1y; Rint1z];
-                        Rint1 = union(Rint1.', Rint2.', 'rows', 'stable');
-                        Rint1 = Rint1.';
+                        Rtest1 = union(Rtest1.', Rtest2.', 'rows', 'stable');
+                        Rtest1 = Rtest1.';
                     end
                 end
             end
@@ -217,12 +224,12 @@ for s = 1:S
 
         % Catalog new angles
         if m == 1
-            Rnew = Rint1;
+            Rnew = Rtest1;
         else
-            Rnew = horzcat(Rnew, Rint1); %#ok<AGROW>
+            Rnew = horzcat(Rnew, Rtest1); %#ok<AGROW>
         end
 
-        r = [min(Rint1(1,:)), min(Rint1(2,:)), min(Rint1(3,:)), max(Rint1(1,:)), max(Rint1(2,:)), max(Rint1(3,:))];
+        r = [min(Rtest1(1,:)), min(Rtest1(2,:)), min(Rtest1(3,:)), max(Rtest1(1,:)), max(Rtest1(2,:)), max(Rtest1(3,:))];
         r(r<0) = 360 + r(r<0);
         fprintf("      (%i, %i, %i) to (%i, %i, %i)\n", r(1), r(2), r(3), r(4), r(5), r(6))
     end
@@ -248,34 +255,26 @@ for s = 1:S
     [m_test_uct] = Trans2Mask(i_test_uct, Rnew, Rin, ipmethod, thresh);
 
     % Update full-resolution check (log to see whether the angle has been evaluated at-full resolution)
-    if size(m_test_uct,1) ~= size(m_fs_uct,1)
-        fr = [fr; false(size(m_test_uct,3), 1)]; %#ok<AGROW>
-    else
-        fr = [fr; true(size(m_test_uct,3), 1)]; %#ok<AGROW>
-    end
+    fr = [fr; false(size(m_test_uct,3), 1)]; %#ok<AGROW>
 
     % Evaluate rotatated FOV
-    [dsctemp, RMSEtemp] = TransEval(m_test_uct, m_test_mri);
-    a_dsc = [a_dsc; dsctemp]; a_RMSE = [a_RMSE; RMSEtemp]; %#ok<AGROW>
+    [mettemp] = TransEval(m_test_uct, m_test_mri);
+    a_met = [a_met; mettemp]; %#ok<AGROW>
 
     % Find best FOV
-    [~, Bi_dsc] = maxk(a_dsc, nume); % best dice values
-    [~, Bi_RMSE] = mink(a_RMSE, nume); % best RMSE values
-
-    % Get all "best" values
-    Bi_all = union(Bi_dsc, Bi_RMSE, 'stable');
+    [~, Bi_met] = maxk(a_met, numE(s));
 
     toc
 
     % Retransform & evaluate if any results listed as best were not found at full resolution
-    if all(fr(Bi_all)) == false; fprintf('\nRe-testing the following angles at full resolution:\n'); end
-    while all(fr(Bi_all)) == false
+    if all(fr(Bi_met)) == false; fprintf('\nRe-testing the following angles at full resolution:\n'); end
+    while all(fr(Bi_met)) == false
         % Find which angles were not tested at full resolution
-        fri = intersect(find(fr == false), Bi_all);
+        fri = intersect(find(fr == false), Bi_met);
 
-        data = table(R(:,fri).', a_dsc(fri), a_RMSE(fri), fr(fri), 'RowNames', string(fri));
-        data.Properties.VariableNames = {'Rotation', 'dice', 'RMSE', 'FReval'};
-        data = sortrows(data, {'dice', 'RMSE'},{'descend', 'ascend'});
+        data = table(R(:,fri).', a_met(fri), 'RowNames', string(fri));
+        data.Properties.VariableNames = {'Rotation', 'metric'};
+        data = sortrows(data, {'metric'},{'descend'});
         disp(data)
 
         % Reset test mri data for re-evaluation
@@ -283,66 +282,115 @@ for s = 1:S
         Rin = imref3d(size(i_fs_uct));
 
         % Re-transformation & re-evalution
-        % Note: "R" is used instead of "Rnew" since indices listed in "B_all" are wrt "R"
+        % Note: "R" is used instead of "Rnew" since indices listed in "Bi_met" are wrt "R"
         [m_test_uct] = Trans2Mask(i_fs_uct, R, Rin, 'cubic', thresh, fri);
 
         % Update full-resolution check
         fr(fri) = true(length(fri), 1);
 
         % Evaluate new data
-        [dsctemp, RMSEtemp] = TransEval(m_test_uct, m_test_mri);
-        a_dsc(fri) = dsctemp;
-        a_RMSE(fri) = RMSEtemp;
+        [mettemp] = TransEval(m_test_uct, m_test_mri);
+        a_met(fri) = mettemp;
 
         % Find best FOV
-        [~, Bi_dsc] = maxk(a_dsc, nume); % best dice values
-        [~, Bi_RMSE] = mink(a_RMSE, nume); % best RMSE values
-
-        % Get all "best" values
-        Bi_all = union(Bi_dsc, Bi_RMSE, 'stable');
+        [~, Bi_met] = maxk(a_met, numE(s));
     end
 
-    % Find overall best rotations
-    Bi_all = intersect(Bi_dsc, Bi_RMSE);
-
-    % Check for no intersections
-    if isempty(Bi_all)
-        % Create array of RMSE values for best dice values
-        RMSEtemp = ones(size(a_RMSE)); RMSEtemp(Bi_dsc) = a_RMSE(Bi_dsc);
-
-        % Find max
-        [~, Bi_all] = mink(RMSEtemp, numE(s));
-    elseif length(Bi_all) > numE(s)
-        Bi_all = Bi_all(1:numE(s));
-    end
-
-    data = table(R(:,Bi_all).', a_dsc(Bi_all), a_RMSE(Bi_all), 'RowNames', string(Bi_all));
-    data.Properties.VariableNames = {'Rotation', 'dice', 'RMSE'};
-    fprintf('\nBest alignment occurred at rotation(s) showed below:\n')
+    data = table(R(:,Bi_met).', a_met(Bi_met), 'RowNames', string(Bi_met));
+    data.Properties.VariableNames = {'Rotation', 'metric'};
+    fprintf('\nMaxima occurred at rotation(s) showed below:\n')
     disp(data)
 
     toc
 end
 
-%% Show best FOV
+B_R_old = R(:,Bi_met);
 
+% Reset test mri data for final evaluation
+m_test_mri = Norm01(sum(m_fs_mri,3));
+Rin = imref3d(size(i_fs_uct));
+
+% While loop that repeatedly checks the area around the "best" alignment until it stops moving
+B_R = [-5; -5; -5]; % set the maxima to something that would never occur
+fprintf('\n--------------------------- Phase %i ---------------------------\n', s+1)
+fprintf('Testing the volume around the maxima in a %i degree radius.\nThis will repeatedly occur until the maxima stops moving.\nmetric @ current maxima:\n', ar(end)/2)
+while any(B_R ~= R(:,Bi_met))
+    B_R = R(:,Bi_met);
+    fprintf('%.4f @ (%i, %i, %i)\n', a_met(Bi_met), B_R(1), B_R(2), B_R(3))
+
+    % Obtain rotation angles
+    rx = (R(1,Bi_met)-ar(end)/2):a(end):(R(1,Bi_met)+ar(end)/2);
+    ry = (R(2,Bi_met)-ar(end)/2):a(end):(R(2,Bi_met)+ar(end)/2);
+    rz = (R(3,Bi_met)-ar(end)/2):a(end):(R(3,Bi_met)+ar(end)/2);
+    Rx = repmat(rx, 1, length(ry)*length(rz)); Rx = sort(Rx);
+    Ry = repmat(ry, 1, length(rz)); Ry = sort(Ry); Ry = repmat(Ry, 1, length(rx));
+    Rz = repmat(rz, 1, length(rx)*length(ry));
+    Rint = [Rx; Ry; Rz];
+
+    % Correct for negative values & 360 values
+    Rint(Rint<0) = 360 + Rint(Rint<0);
+    Rint(Rint==360) = 0;
+
+    % First, identify new angles
+    Rnew = Rint; Rold = R;
+    R = DupAngleRmv(horzcat(R, Rnew));
+    Rnew1 = R(:, (size(Rold,2)+1):end);
+
+    % Next, identify angles that need to be retested
+    [~,Rinti,~] = intersect(R.', Rint.', 'rows'); Rinti = Rinti.';
+    fri = find(fr == false);
+    Rnewi = intersect(Rinti, fri);
+    Rnew2 = R(:,Rnewi);
+
+    if ~isempty(Rnew1)
+        % Transform uCT data
+        [m_test_uct] = Trans2Mask(i_fs_uct, Rnew1, Rin, 'cubic', thresh);
+
+        % Update full-resolution check (log to see whether the angle has been evaluated at-full resolution)
+        fr = [fr; true(size(m_test_uct,3), 1)]; %#ok<AGROW>
+
+        % Evaluate rotatated FOV
+        [mettemp] = TransEval(m_test_uct, m_test_mri); a_met = [a_met; mettemp]; %#ok<AGROW>
+    end
+
+    if ~isempty(Rnew2)
+        % Transform uCT data
+        [m_test_uct] = Trans2Mask(i_fs_uct, Rnew2, Rin, 'cubic', thresh);
+    
+        % Update full-resolution check (log to see whether the angle has been evaluated at-full resolution)
+        fr(Rnewi) = true(size(m_test_uct,3), 1); %#ok<SAGROW>
+    
+        % Evaluate rotatated FOV
+        [mettemp, dsc, RMSE] = TransEval(m_test_uct, m_test_mri); 
+        a_met(Rnewi) = mettemp; %#ok<SAGROW>
+    end
+
+    % Find best FOV
+    [~, Bi_met] = maxk(a_met, numE(end));
+end
+
+fprintf('\nFinal orientation: (%i, %i, %i)\n', R(1,Bi_met), R(2,Bi_met), R(3,Bi_met));
+
+toc
+
+%% Show best FOV
 % For display
-B = Bi_all;
+B = Bi_met;
 tform = affinetform3d(rigidtform3d(squeeze(R(:,B).'), [0 0 0]));
 
 % Create MRI & uCT images for display
-i_final_uct = imwarp(i_fs_uct, imref3d(size(i_fs_uct)), tform, 'cubic', "OutputView", affineOutputView(size(i_fs_uct), tform, "BoundsStyle","CenterOutput"));
-if any(size(i_final_uct) ~= size(i_fs_uct)); i_temp = ROITrim(i_final_uct, size(i_fs_uct)); end
-m_disp_uct = i_final_uct > thresh;
-m_disp_uct = imfill(m_disp_uct, 'holes');
-i_final_uct = i_final_uct.*m_disp_uct;
-m_disp_uct = Norm01(sum(m_disp_uct, 3));
+i_finalum_uct = imwarp(i_fsum_uct, imref3d(size(i_fsum_uct)), tform, 'cubic', "OutputView", affineOutputView(size(i_fsum_uct), tform, "BoundsStyle","CenterOutput"));
+if any(size(i_finalum_uct) ~= size(i_fsum_uct)); i_temp = ROITrim(i_finalum_uct, size(i_fsum_uct)); end
+m_final_uct = i_finalum_uct > thresh;
+m_final_uct = imfill(m_final_uct, 'holes');
+i_final_uct = i_finalum_uct.*m_final_uct;
+m_disp_uct = Norm01(sum(m_final_uct, 3));
 i_disp_uct = Norm01(sum(i_final_uct, 3));
 m_disp_mri = Norm01(sum(m_fs_mri, 3));
 i_disp_mri = Norm01(sum(i_fs_mri, 3));
 
-data = table(R.', a_dsc, a_RMSE, 'RowNames', string([1:length(a_dsc)].')); %#ok<NBRAK1>
-data.Properties.VariableNames = {'Rotation', 'dice', 'RMSE'};
+data = table(R.', a_met, fr, 'RowNames', string([1:length(a_met)].')); %#ok<NBRAK1>
+data.Properties.VariableNames = {'Rotation', 'metric', 'FReval'};
 
 % take data off gpu for non-linear interpolation
 if ~strcmp(ipmethod,'linear') && isgpuarray(i_fs_uct)
@@ -356,7 +404,7 @@ imagesc(m_disp_mri>0); axis square; axis off; colormap gray; title('MRI');
 nexttile
 imagesc(m_disp_uct>0); axis square; axis off; colormap gray; title('uCT');
 nexttile
-imagesc(imfuse(m_disp_mri>0, m_disp_uct>0)); axis square; axis off; title('Image Overlap'); hold on; legend([scatter([],[],10,[0 1 0],'filled') scatter([],[],10,[1 0 1],'filled')],{'MRI Image','uCT Image'}); hold off;
+imagesc(imfuse(m_disp_mri>0, m_disp_uct>0)); axis square; axis off; title('Image Overlap'); hold on; legend([scatter([],[],10,[0 1 0],'filled') scatter([],[],10,[1 0 1],'filled')],{'MRI','uCT'}); hold off;
 title(f1, '2D Binary Masks')
 
 figure('Name', 'm', 'NumberTitle', 'off'); f2 = tiledlayout('flow', 'TileSpacing', 'compact', 'Padding', 'compact');
@@ -365,7 +413,7 @@ imagesc(m_disp_mri); axis square; axis off; colormap gray; title('MRI');
 nexttile
 imagesc(m_disp_uct); axis square; axis off; colormap gray; title('uCT');
 nexttile
-imagesc(imfuse(m_disp_mri, m_disp_uct)); axis square; axis off; title('Image Overlap'); hold on; legend([scatter([],[],10,[0 1 0],'filled') scatter([],[],10,[1 0 1],'filled')],{'MRI Image','uCT Image'}); hold off;
+imagesc(imfuse(m_disp_mri, m_disp_uct)); axis square; axis off; title('Image Overlap'); hold on; legend([scatter([],[],10,[0 1 0],'filled') scatter([],[],10,[1 0 1],'filled')],{'MRI','uCT'}); hold off;
 title(f2, '2D Masks')
 
 figure('Name', 'i', 'NumberTitle', 'off'); f3 = tiledlayout('flow', 'TileSpacing', 'compact', 'Padding', 'compact');
@@ -374,15 +422,36 @@ imagesc(i_disp_mri); axis square; axis off; colormap gray; title('MRI');
 nexttile
 imagesc(i_disp_uct); axis square; axis off; colormap gray; title('uCT');
 nexttile
-imagesc(imfuse(i_disp_mri, i_disp_uct)); axis square; axis off; title('Image Overlap'); hold on; legend([scatter([],[],10,[0 1 0],'filled') scatter([],[],10,[1 0 1],'filled')],{'MRI Image','uCT Image'}); hold off;
+imagesc(imfuse(i_disp_mri, i_disp_uct)); axis square; axis off; title('Image Overlap'); hold on; legend([scatter([],[],10,[0 1 0],'filled') scatter([],[],10,[1 0 1],'filled')],{'MRI','uCT'}); hold off;
 title(f3, '2D Images')
 
-% dsc_scale = a_dsc.^4; dsc_scale = (dsc_scale./max(dsc_scale)).*40;
-% RMSE_scale = a_RMSE.^4; RMSE_scale = (RMSE_scale./min(RMSE_scale)).*40;
-% figure('Name', 'dice', 'NumberTitle', 'off'); scatter3(Rx,Ry,Rz,dsc_scale, a_dsc, 'filled'); xlim([0 360]); ylim([0 360]); zlim([0 360]); xlabel('X Rotation (Degrees)'); ylabel('Y Rotation (Degrees)'); zlabel('Z Rotation (Degrees)'); cb = colorbar; cb.Label.String = 'dice'; colormap(flipud(turbo));
-% figure('Name', 'RMSE', 'NumberTitle', 'off'); scatter3(Rx,Ry,Rz,RMSE_scale, a_RMSE, 'filled'); xlim([0 360]); ylim([0 360]); zlim([0 360]); xlabel('X Rotation (Degrees)'); ylabel('Y Rotation (Degrees)'); zlabel('Z Rotation (Degrees)'); cb = colorbar; cb.Label.String = 'RMSE'; colormap(turbo);
+%% Reslicing
+% Reslice microCT data
+[i_finaltrue_uct, m_finaltrue_uct, Bpix, Bofs] = CT_reslicer(i_final_uct, m_final_uct, i_fs_mri, m_fs_mri, 1/res, 'Dice');
 
-% clear i j k i2 j2 m diff tissue CC idx numPixels i_temp m_temp tform im_name m_name m
+plotmygraph(i_fs_mri, 'MRI Images'); plotmygraph(i_finaltrue_uct, 'microCT Images')
+figure('Name', 'finali', 'NumberTitle', 'off'); f4 = tiledlayout('flow', 'TileSpacing', 'compact', 'Padding', 'compact');
+for i = 1:size(i_fs_mri,3)
+    nexttile
+    imagesc(imfuse(i_fs_mri(:,:,i), i_finaltrue_uct(:,:,i))); axis square; axis off; title(num2str(i));
+end
+hold on; legend([scatter([],[],10,[0 1 0],'filled') scatter([],[],10,[1 0 1],'filled')],{'MRI','uCT'}); hold off;
+title(f4, 'Image Slices')
+
+plotmygraph(m_fs_mri, 'MRI Masks'); plotmygraph(m_finaltrue_uct, 'microCT Masks')
+figure('Name', 'finalm', 'NumberTitle', 'off'); f5 = tiledlayout('flow', 'TileSpacing', 'compact', 'Padding', 'compact');
+for i = 1:size(m_fs_mri,3)
+    nexttile
+    imagesc(imfuse(m_fs_mri(:,:,i), m_finaltrue_uct(:,:,i))); axis square; axis off; title(num2str(i));
+end
+hold on; legend([scatter([],[],10,[0 1 0],'filled') scatter([],[],10,[1 0 1],'filled')],{'MRI','uCT'}); hold off;
+title(f5, 'Mask Slices')
+
+%%
+fprintf(['\n\nslice offset: ', num2str(Bofs)])
+fprintf(['\npixel offset: ', num2str(Bpix)])
+fprintf(['\ndice 2D: ', num2str(dicecustom(i_disp_uct, m_disp_uct>0, i_disp_mri, m_disp_mri>0, 2))])
+fprintf(['\nRMSE 2D: ',num2str(-1*irmsecustom(i_disp_uct, m_disp_uct>0, i_disp_mri, m_disp_mri>0, 2)), '\n'])
 
 %% Functions
 % % Assuming both inputs are same FOV, decreases resolution of first image to match that of second image
@@ -464,7 +533,15 @@ title(f3, '2D Images')
 % end
 
 % Centers 2D & 3D data
-function [mcs, imcs, diff] = CentShift(m, im)
+function [diff, imcs, varargout] = CentShift(im, m)
+% Check for no mask input
+if nargin == 1
+   m = im;
+   opcheck = false;
+else
+    opcheck = true;
+end
+
 % Find center of ROI
 if size(m, 3) > 1
     cent = regionprops3(m, 'Centroid', 'Volume'); 
@@ -481,7 +558,6 @@ if size(m, 3) > 1
     % Find offset from center
     diff = [round(size(m,1)/2)-cent(2), round(size(m,2)/2)-cent(1), round(size(m,3)/2)-cent(3)];
 else
-    
     cent = regionprops(m, 'Centroid'); 
     cent = round(cat(1, cent.Centroid));
 
@@ -491,6 +567,11 @@ end
 
 % Shift mask & image to center
 mcs = circshift(m, diff); imcs = circshift(im, diff);
+
+% Check if we need to output mask as well
+if opcheck
+    varargout{1} = mcs;
+end
 end
 
 % Normalize input data to range of 0-1
@@ -499,7 +580,7 @@ X = (x - min(x,[],'all'))./max(x,[],'all');
 end
 
 % Trim image down to specified size. Buff is either equal padding on all axis, or dimension size that roi should be padded to
-function T = ROITrim(ut, buff)
+function [T, roi] = ROITrim(ut, buff)
 % Reset ROI range
 roi = [1, size(ut,1); 1, size(ut,2); 1, size(ut,3)];
 
@@ -728,7 +809,7 @@ msk = (msk - min(msk,[],[1 2]))./max(msk,[],[1 2]);
 end
 
 % Evaluate transformations
-function [dsc, RMSE] = TransEval(m_tran, m_true)
+function [met, dsc, RMSE] = TransEval(m_tran, m_true)
 m_true = repmat(m_true, [1 1 size(m_tran,3)]);
 
 % RMSE
@@ -741,6 +822,8 @@ area_t = (squeeze(sum(m_tran, [1 2])) + squeeze(sum(m_true, [1 2])));
 
 % dice
 dsc = 2.*area_i./area_t;
+
+met = dsc - RMSE;
 end
 
 % Custom version of 'imwarp()'; more efficient & works better w/ GPU
