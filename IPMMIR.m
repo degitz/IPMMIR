@@ -4,7 +4,7 @@
 % fs: full-sized
 % og: original
 %%%
-%%%%%% Uses binary mask for IOU & dice, non-binary mask for RMSE
+%%%%%% Uses binary mask for IOU & dice, image for RMSE
 %%%%%% Transforms image & finds mask, then converts both to 2D. Outputs both image & mask
 clear; clc; close all;
 
@@ -143,11 +143,11 @@ for s = 1:S
 
     % Resize (if applicable)
     if s < S
-        m_test_mri = Norm01(sum(imresize3(m_fs_mri, [rsval(s) rsval(s) size(m_fs_mri,3)]),3));
+        m_test_mri = sum(imresize3(m_fs_mri, [rsval(s) rsval(s) size(m_fs_mri,3)]),3) > 0;
         i_test_mri = Norm01(sum(imresize3(i_fs_mri, [rsval(s) rsval(s) size(i_fs_mri,3)]),3));
         i_test_uct = Norm01(imresize3(i_fs_uct, [rsval(s) rsval(s) rsval(s)]));
     else
-        m_test_mri = Norm01(sum(m_fs_mri,3));
+        m_test_mri = sum(m_fs_mri,3) > 0;
         i_test_mri = Norm01(sum(i_fs_mri,3));
         i_test_uct = i_fs_uct;
     end
@@ -273,7 +273,7 @@ for s = 1:S
 
         % Reset test mri data for re-evaluation
         i_test_mri = Norm01(sum(i_fs_mri,3));
-        m_test_mri = Norm01(sum(m_fs_mri,3));
+        m_test_mri = i_test_mri > 0;
         Rin = imref3d(size(i_fs_uct));
 
         % Re-transformation & re-evalution
@@ -381,6 +381,7 @@ m_final_uct = imfill(m_final_uct, 'holes');
 i_final_uct = i_final_uct.*m_final_uct;
 m_disp_uct = Norm01(sum(m_final_uct, 3));
 i_disp_uct = Norm01(sum(i_final_uct, 3));
+i_disp_uct = i_disp_uct.*m_disp_uct;
 m_disp_mri = Norm01(sum(m_fs_mri, 3));
 i_disp_mri = Norm01(sum(i_fs_mri, 3));
 
@@ -678,6 +679,9 @@ for i = 1:inum
     msk(:,:,i) = m_temp; img(:,:,i) = i_temp;
 end
 
+% % Remove areas in microCT mask thinner than 1/4 MRI slice (as it probably wouldn't be seen in MRI)
+% msk = msk.*(msk > round(1/(0.069447*4)));
+
 % Normalize
 img = (img - min(img,[],[1 2]))./max(img,[],[1 2]);
 msk = (msk - min(msk,[],[1 2]))./max(msk,[],[1 2]);
@@ -688,13 +692,13 @@ end
 
 % Evaluate transformations
 function [met] = TransEval(i_tran, m_tran, i_true, m_true)
+i_true = repmat(i_true, [1 1 size(i_tran,3)]);
 m_true = repmat(m_true, [1 1 size(m_tran,3)]);
 
 % RMSE
-RMSE = sqrt(squeeze(sum((m_true - m_tran).^2,[1 2]))./(size(m_tran,1)*size(m_tran,2)));
+RMSE = sqrt(squeeze(sum((i_true - i_tran).^2,[1 2]))./(size(i_tran,1)*size(i_tran,2)));
 
 % dice parameters
-m_tran = m_tran > 0; m_true = m_true > 0;
 area_i = squeeze(sum(m_tran.*m_true, [1 2]));
 area_t = (squeeze(sum(m_tran, [1 2])) + squeeze(sum(m_true, [1 2])));
 
