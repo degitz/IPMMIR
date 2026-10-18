@@ -11,63 +11,67 @@ clear; clc; close all;
 tic
 
 % Parameters
-tissue = 'nemo';
-res = 0.069447; % resolution, mm
-th = 0.25; % uCT mask threshold
-roipad = 20; % roi padding
-rsval = [  64,  96, 128     ]; % resize value
-a =     [  30,  10,   2,   1,   1]; % rotation resolutions & ranges for transformation
-ar =    [ 360,  60,  12,   6,   2];
-numE =          [5,   4,   3,   1]; % number of local extrema from previous iteration to test
-nume = 10; % number of local extrema before combination
-F = length(a)-1; % number of iterations
-W = 20; % max number of while loop iterations
-dtype = 'image'; % type of data to use in test. Options are 'image' and 'mask'
+rsval  = [ 64,  96, 128];           % resize value
+a      = [ 30,  10,   2,   1,   1]; % rotation resolutions for transformation
+ar     = [360,  60,  12,   6,   2]; % rotation ranges for transformation
+numE   =       [ 5,   4,   3,   1]; % number of local extrema from previous iteration to test
+nume   = 10;                        % number of local extrema before combination
+W      = 20;                        % max number of while loop iterations for final phase
+roipad = 20;                        % roi padding, # pixels
+th     =  0.25;                     % uCT mask threshold
+dtype  = 'image';                   % type of data to use in test. Options are 'image' and 'mask'
+tissue = 'oregano';
 
 %%% Load MRI data
 [im_name, m_name, ~, se_offset] = grmdfs(tissue, 'ssems');
-[~, ~, mri_i_fs, P, ~] = loadfidfancy(im_name);
+[~, mri_i_seum, P, ~, ~] = loadfidfancy(im_name);
+load(m_name); mri_m_fs = m;
 % Load GRE
-[im_name, ~, ~] = grmdfs(tissue, 'sgems');
-[~, ~, mri_i_ge, ~, ~] = loadfidfancy(im_name);
-% Import mask
-load(m_name); mri_m_fs = m; 
+[im_name, m_name, ~] = grmdfs(tissue, 'sgems');
+[~, mri_i_geum, ~, ~, ~] = loadfidfancy(im_name); 
+load(m_name); mri_m_ge = m; 
 % Circular shift (so it aligns w/ GRE)
-mri_i_fs = circshift(mri_i_fs, se_offset, 1);
-% Apply mask
-mri_i_fs = abs(mri_i_fs.*mri_m_fs); mri_i_ge = abs(mri_i_ge.*mri_m_fs);
+mri_i_seum = circshift(mri_i_seum, se_offset, 1);
+mri_m_fs = circshift(mri_m_fs, se_offset, 1);
+% Isolate magnitude
+mri_i_seum = abs(mri_i_seum); mri_i_geum = abs(mri_i_geum); mri_i_geumog = mri_i_geum; mri_i_seumog = mri_i_seum;
 % Translate to center
-[diff, ~, ~] = CentShift(squeeze(sum(mri_i_fs,3)), squeeze(sum(mri_m_fs,3))>0);
-mri_i_fs = circshift(mri_i_fs, [diff 0]); mri_m_fs = circshift(mri_m_fs, [diff 0]); mri_i_ge = circshift(mri_i_ge, [diff 0]);
+[diff_mri, ~, ~] = CentShift(mri_i_seum.*mri_m_fs, mri_m_fs);
+mri_i_seum = circshift(mri_i_seum, [diff_mri 0]); mri_m_fs = circshift(mri_m_fs, [diff_mri 0]); mri_i_geum = circshift(mri_i_geum, [diff_mri 0]); mri_m_ge = circshift(mri_m_ge, [diff_mri 0]);
 % Normalize data (done this way because 1,3,5,7 & 2,4,6,8,10 were acquired separately
-mri_se_set1 = zeros(size(mri_i_fs,1), size(mri_i_fs,2), size(mri_i_fs,3)/2); mri_ge_set1 = mri_se_set1;
-mri_se_set2 = zeros(size(mri_i_fs,1), size(mri_i_fs,2), size(mri_i_fs,3)/2); mri_ge_set2 = mri_se_set2;
+mri_se_set1 = zeros(size(mri_i_seum,1), size(mri_i_seum,2), size(mri_i_seum,3)/2); mri_ge_set1 = mri_se_set1;
+mri_se_set2 = zeros(size(mri_i_seum,1), size(mri_i_seum,2), size(mri_i_seum,3)/2); mri_ge_set2 = mri_se_set2;
 I1 = 0; I2 = 0;
-for i = 1:size(mri_i_fs,3) % split
+for i = 1:size(mri_i_seum,3) % split
     if rem(i,2) == 1
         I1 = I1 + 1;
-        mri_se_set1(:,:,I1) = mri_i_fs(:,:,i); mri_ge_set1(:,:,I1) = mri_i_ge(:,:,i);
+        mri_se_set1(:,:,I1) = mri_i_seum(:,:,i); mri_ge_set1(:,:,I1) = mri_i_geum(:,:,i);
     else
         I2 = I2 + 1;
-        mri_se_set2(:,:,I2) = mri_i_fs(:,:,i); mri_ge_set2(:,:,I2) = mri_i_ge(:,:,i);
+        mri_se_set2(:,:,I2) = mri_i_seum(:,:,i); mri_ge_set2(:,:,I2) = mri_i_geum(:,:,i);
     end
 end
 mri_se_set1 = Norm01(mri_se_set1); mri_se_set2 = Norm01(mri_se_set2); mri_ge_set1 = Norm01(mri_ge_set1); mri_ge_set2 = Norm01(mri_ge_set2); % normalize
 I1 = 0; I2 = 0;
-for i = 1:size(mri_i_fs,3) % recombine
+for i = 1:size(mri_i_seum,3) % recombine
     if rem(i,2) == 1
         I1 = I1 + 1;
-        mri_i_fs(:,:,i) = mri_se_set1(:,:,I1); mri_i_ge(:,:,i) = mri_ge_set1(:,:,I1);
+        mri_i_seum(:,:,i) = mri_se_set1(:,:,I1); mri_i_geum(:,:,i) = mri_ge_set1(:,:,I1);
     else
         I2 = I2 + 1;
-        mri_i_fs(:,:,i) = mri_se_set2(:,:,I2); mri_i_ge(:,:,i) = mri_ge_set2(:,:,I2);
+        mri_i_seum(:,:,i) = mri_se_set2(:,:,I2); mri_i_geum(:,:,i) = mri_ge_set2(:,:,I2);
     end
 end
+% Apply mask to final imported data
+mri_i_fs = mri_i_seum.*mri_m_fs; mri_i_ge = mri_i_geum.*mri_m_ge;
 
+% Automatic parameters
+res = 0.069447; % resolution of test data, mm
+F = length(a)-1; % number of iterations
 fov = P.FOV.fov.ro*10; % field of view, mm
 
 %%% Import uCT data
-uct_i_og = niftiread("C:\Users\jacob\OneDrive - Texas A&M University\College\TAMU\NMR RF Lab\_Project GRMD\uCT Data\SlicerSaves\Volumes\"+tissue+"_vol.nii");
+uct_i_og = niftiread("C:\Users\jacob\OneDrive - Texas A&M University\TAMU\NMR RF Lab\_Project GRMD\uCT Data\SlicerSaves\Volumes\"+tissue+"_vol.nii");
 % Convert data type to double
 uct_i_og = double(uct_i_og);
 % Reshape & rotate array to correct format (for some reason, it outputs flipped along both axes
@@ -77,18 +81,18 @@ uct_i_og = rot90(permute(uct_i_og, [3 1 2]),2); % 'up resolution' uCT image (in 
 for f1 = 1:3
     arrpad = [0 0 0];
     if size(uct_i_og, f1) < round(fov/res) % number of pixels for 23mm FOV of 69.447um resolution
-        diff = round(fov/res) - size(uct_i_og, f1);
-        if rem(diff,2) == 1
-            diff = diff - 1; 
+        diff_mri = round(fov/res) - size(uct_i_og, f1);
+        if rem(diff_mri,2) == 1
+            diff_mri = diff_mri - 1; 
             arrpad(f1) = 1;
             uct_i_og = padarray(uct_i_og, arrpad, 0, 'pre');
         end
-        arrpad(f1) = round(diff/2);
+        arrpad(f1) = round(diff_mri/2);
         uct_i_og = padarray(uct_i_og, arrpad, 0, 'both');
     end
 end
 
-clear diff f1 fov f2 m_name im_name arrpad P m se_offset mri_se_set1 mri_se_set2 mri_ge_set1 mri_ge_set2
+clear diff_mri f1 fov f2 m_name im_name arrpad P m se_offset mri_se_set1 mri_se_set2 mri_ge_set1 mri_ge_set2
 
 %% Create binary mask for uCT
 % Downscale data
@@ -102,14 +106,14 @@ res = res_old*(size(uct_i_og,1)/size(uct_i_fs,1));
 % Difference in slice resolution (MRI slice thickness (mm) / uCT slice thickness (mm))
 resdiff = 1/res;
 
-% Keep unmasked image for final analysis
-uct_i_fsum = uct_i_fs;
-
 % Create mask
 uct_m_fs = GenMask(uct_i_fs, th);
 
+% Keep unmasked image for final analysis
+uct_i_um = uct_i_fs;
+
 % Apply to uCT image
-uct_i_fs = uct_i_fsum.*uct_m_fs;
+uct_i_fs = uct_i_um.*uct_m_fs;
 
 %% Trim ROI
 mri_m_fs = ROITrim(mri_m_fs, roipad);
@@ -139,20 +143,21 @@ elseif size(mri_m_fs,1) < size(uct_m_fs,1)
 end
 
 % Apply trim to images
-mri_i_fs = ROITrim(mri_i_fs, size(mri_m_fs)); mri_i_ge = ROITrim(mri_i_ge, size(mri_m_fs));
-[uct_i_fs, roi] = ROITrim(uct_i_fs, size(uct_m_fs));
+[mri_i_fs, roi_mri] = ROITrim(mri_i_fs, size(mri_m_fs)); mri_i_ge = mri_i_ge(roi_mri(1,1):roi_mri(1,2), roi_mri(2,1):roi_mri(2,2), roi_mri(3,1):roi_mri(3,2)); mri_m_ge = mri_m_ge(roi_mri(1,1):roi_mri(1,2), roi_mri(2,1):roi_mri(2,2), roi_mri(3,1):roi_mri(3,2));
+[uct_i_fs, roi_uct] = ROITrim(uct_i_fs, size(uct_m_fs));
 
 % Lastly, center data in 3D space
 % Note: it is important to center the data after the ROI is trimmed. If
 % done so beforehand, the ROI trimming will off-center the volume to ensure
 % equal padding on all sides
-[diff, ~, ~] = CentShift(squeeze(sum(mri_i_fs,3)), squeeze(sum(mri_m_fs,3))>0);
-mri_i_fs = circshift(mri_i_fs, [diff 0]); mri_m_fs = circshift(mri_m_fs, [diff 0]); mri_i_ge = circshift(mri_i_ge, [diff 0]);
-[diff, uct_i_fs, uct_m_fs] = CentShift(uct_i_fs, uct_m_fs);
+[diff_mri, ~, ~] = CentShift(squeeze(sum(mri_i_fs,3)), squeeze(sum(mri_m_fs,3))>0);
+mri_i_fs = circshift(mri_i_fs, [diff_mri 0]); mri_m_fs = circshift(mri_m_fs, [diff_mri 0]); mri_i_ge = circshift(mri_i_ge, [diff_mri 0]); mri_m_ge = circshift(mri_m_ge, [diff_mri 0]);
+[diff_uct, uct_i_fs, uct_m_fs] = CentShift(uct_i_fs, uct_m_fs);
 
 % Also apply shift & trim to unmasked data
-uct_i_fsum = uct_i_fsum(roi(1,1):roi(1,2), roi(2,1):roi(2,2), roi(3,1):roi(3,2));
-uct_i_fsum = circshift(uct_i_fsum, diff);
+mri_i_seum = mri_i_seum(roi_mri(1,1):roi_mri(1,2), roi_mri(2,1):roi_mri(2,2), roi_mri(3,1):roi_mri(3,2)); mri_i_seum = circshift(mri_i_seum, [diff_mri 0]);
+mri_i_geum = mri_i_geum(roi_mri(1,1):roi_mri(1,2), roi_mri(2,1):roi_mri(2,2), roi_mri(3,1):roi_mri(3,2)); mri_i_geum = circshift(mri_i_geum, [diff_mri 0]);
+uct_i_um = uct_i_um(roi_uct(1,1):roi_uct(1,2), roi_uct(2,1):roi_uct(2,2), roi_uct(3,1):roi_uct(3,2)); uct_i_um = circshift(uct_i_um, diff_uct);
 
 if strcmp(dtype, 'image')
     uct_test = uct_i_fs;
@@ -168,10 +173,10 @@ clear roidiff
 
 %% Transform & Evaluate
 % Initialize variables
-MT_bi = 1; % best metric
+MT_bi = 1;            % best metric
 RT = [180; 180; 180]; % rotations
-MT = []; % evaluation metrics
-FR = []; % full-resolution checks
+MT = [];              % evaluation metrics
+FR = [];              % full-resolution checks
 
 for f1 = 1:F
     fprintf('\n--------------------------- Phase %i ---------------------------\n', f1)
@@ -186,7 +191,7 @@ for f1 = 1:F
     end
 
     % Create spatial referencing information
-    Rin = imref3d(size(uct_testin));
+    rin = imref3d(size(uct_testin));
 
     % Sort ranges according to index. Should make finding overlaps easier
     MT_bi = sort(MT_bi, 'ascend');
@@ -254,22 +259,8 @@ for f1 = 1:F
 
     fprintf("%i unique rotations will be performed.\n", size(RT_new,2))
 
-    % Preallocate data
-    uct_m_testout = zeros(size(uct_testin,1), size(uct_testin,2), size(RT_new,2));
-
-    for f2 = 1:size(RT_new,2)
-        % Transform image
-        [i_tmp, m_tmp] = RotateData(uct_testin, RT_new(:,f2), 'linear', Rin, th);
-
-        % Convert to 2D
-        m_tmp = sum(m_tmp, 3);
-
-        % Add into array
-        uct_m_testout(:,:,f2) = m_tmp;
-    end
-
-    % Normalize data
-    uct_m_testout = (uct_m_testout - min(uct_m_testout,[],[1 2]))./(max(uct_m_testout,[],[1 2]) - min(uct_m_testout,[],[1 2]));
+    % Transform uCT data
+    uct_m_testout = Trans2Mask(uct_testin, RT_new, rin, 'linear', th);
 
     % Update full-resolution check (log to see whether the angle has been evaluated at-full resolution)
     FR = [FR; false(size(uct_m_testout,3), 1)]; %#ok<AGROW>
@@ -282,15 +273,19 @@ for f1 = 1:F
     [~, MT_bi1] = maxk(MT(:,1), nume);
     [~, MT_bi2] = maxk(MT(:,2), nume);
 
+    % Remove close extrema
+    MT_bi1 = CloseExtrRmv(MT_bi1, RT, a(f1)*2);
+    MT_bi2 = CloseExtrRmv(MT_bi2, RT, a(f1)*2);
+
     % Combine all best FOVs into one array
-    MT_bi = union(MT_bi1, MT_bi2, 'stable'); 
+    MT_bi = union(MT_bi1, MT_bi2, 'stable');
 
     toc
 
     % Reset test mri data for re-evaluation
     mri_m_test = Norm01(sum(mri_m_fs,3));
     uct_testin = uct_test;
-    Rin = imref3d(size(uct_testin));
+    rin = imref3d(size(uct_testin));
 
     % Retransform & evaluate if any results listed as best were not found at full resolution
     if all(FR(MT_bi)) == false; fprintf('\nRe-testing the following angles at full resolution:\n'); end
@@ -303,23 +298,9 @@ for f1 = 1:F
         data = sortrows(data, {'Metrics'},{'descend'});
         disp(data)
 
-        % Preallocate data
-        uct_m_testout = zeros(size(uct_testin,1), size(uct_testin,2), length(nFRi));
-
         % Re-transformation & re-evalution
-        for f2 = 1:length(nFRi)
-            % Transform image
-            [i_tmp, m_tmp] = RotateData(uct_testin, RT(:,nFRi(f2)), 'cubic', Rin, th);
-
-            % Convert to 2D
-            m_tmp = sum(m_tmp, 3);
-
-            % Add into array
-            uct_m_testout(:,:,f2) = m_tmp;
-        end
-
-        % Normalize data
-        uct_m_testout = (uct_m_testout - min(uct_m_testout,[],[1 2]))./(max(uct_m_testout,[],[1 2]) - min(uct_m_testout,[],[1 2]));
+        % Note: "RT" is used instead of "RT_new" since indices listed in "Bi_met" are wrt "R"
+        uct_m_testout = Trans2Mask(uct_testin, RT, rin, 'cubic', th, nFRi);
 
         % Update full-resolution check
         FR(nFRi) = true(length(nFRi), 1);
@@ -328,12 +309,30 @@ for f1 = 1:F
         MT_tmp = custommetrics(uct_m_testout, uct_m_testout>0, mri_m_test, mri_m_test>0, 2);
         MT(nFRi,:) = MT_tmp;
 
-        % Find best FOV
-        [~, MT_bi1] = maxk(MT(:,1), nume);
-        [~, MT_bi2] = maxk(MT(:,2), nume);
+        % Reset best metrics indices
+        MT_bi = [];
 
-        % Combine all best FOVs into one array
-        MT_bi = union(MT_bi1, MT_bi2, 'stable');
+        % Create temporary extrema number
+        nume_tmp = nume/1.5;
+
+        % Ensure enough extrema are isolated
+        % Note: DO NOT REMOVE OR MODIFY THE SECOND CONDITION. It is in 
+        % place to ensure this doesn't become an infinite loop.
+        while (length(MT_bi) < nume) && (nume_tmp < size(MT,1))
+            % Increase number of extrema isolated
+            nume_tmp = round(nume_tmp*1.5);
+
+            % Find best FOV
+            [~, MT_bi1] = maxk(MT(:,1), nume_tmp);
+            [~, MT_bi2] = maxk(MT(:,2), nume_tmp);
+
+            % Remove close extrema
+            MT_bi1 = CloseExtrRmv(MT_bi1, RT, a(f1)*2);
+            MT_bi2 = CloseExtrRmv(MT_bi2, RT, a(f1)*2);
+
+            % Combine all best FOVs into one array
+            MT_bi = union(MT_bi1, MT_bi2, 'stable');
+        end
     end
 
     % Find best FOV
@@ -355,14 +354,14 @@ MT_bi_old = MT_bi;
 mri_i_test = mri_i_fs;
 mri_m_test = mri_m_fs;
 uct_testin = uct_test;
-Rin = imref3d(size(uct_testin));
+rin = imref3d(size(uct_testin));
 RT_rs = RT(:,MT_bi_old);
 f2 = 1; % index
 w = 1; % while loop index
 
 % Calculate metric for resliced data of current rotation
-[uct_i_testout, uct_m_testout] = RotateData(uct_testin, RT_rs, 'cubic', Rin, th);
-[uct_i_testout, uct_m_testout, ~, ~] = CT_reslicer_v3(uct_i_testout, uct_m_testout, resdiff, mri_i_test, mri_m_test);
+[uct_i_testout, uct_m_testout] = RotateData(uct_testin, RT_rs, rin, th);
+[uct_i_testout, uct_m_testout, ~, ~] = Reslice(uct_i_testout, uct_m_testout, resdiff, mri_i_test, mri_m_test);
 MT_rs = MII(uct_i_testout, mri_i_test);
 
 % While loop that repeatedly checks the area around the "best" alignment until it stops moving
@@ -397,10 +396,10 @@ while any(RT_b ~= RT_rs(:,MT_bi)) && (w < W)
         f2 = f2 + 1;
 
         % Transform image & create mask
-        [uct_i_testout, uct_m_testout] = RotateData(uct_testin, RT_new(:,f1), 'cubic', Rin, th);
+        [uct_i_testout, uct_m_testout] = RotateData(uct_testin, RT_new(:,f1), rin, th);
 
         % Reslice microCT data
-        [uct_i_testout, uct_m_testout, ~, ~] = CT_reslicer_v3(uct_i_testout, uct_m_testout, resdiff, mri_i_test, mri_m_test);
+        [uct_i_testout, uct_m_testout, ~, ~] = Reslice(uct_i_testout, uct_m_testout, resdiff, mri_i_test, mri_m_test);
 
         % Evaluate
         MT_rs(f2) = MII(uct_i_testout, mri_i_test);
@@ -420,9 +419,9 @@ end
 
 %% Show best FOV
 % Create MRI & uCT images for display
-[uct_i_FNum, uct_m_FN] = RotateData(uct_i_fsum, RT_rs(:,MT_bi), 'cubic', Rin, th);
+[uct_i_FNum, uct_m_FN] = RotateData(uct_i_um, RT_rs(:,MT_bi), rin, th);
 uct_i_FN = uct_i_FNum.*uct_m_FN;
-[uct_i_FNrs, uct_m_FNrs, PIX_b, SLC_b] = CT_reslicer_v3(uct_i_FN, uct_m_FN, resdiff, mri_i_fs, mri_m_fs);
+[uct_i_FNrs, uct_m_FNrs, PIX_b, SLC_b] = Reslice(uct_i_FN, uct_m_FN, resdiff, mri_i_fs, mri_m_fs);
 uct_m_tmp = Norm01(sum(uct_m_FN, 3));
 uct_i_tmp = Norm01(sum(uct_i_FN, 3));
 mri_m_tmp = Norm01(sum(mri_m_fs, 3));
@@ -446,33 +445,9 @@ if isgpuarray(uct_i_fs)
     uct_i_fs = gather(uct_i_fs);
 end
 
-% Show figures
-figure('Name', 'mb', 'NumberTitle', 'off'); fig1 = tiledlayout('flow', 'TileSpacing', 'compact', 'Padding', 'compact');
-nexttile
-imagesc(mri_m_tmp>0); axis square; axis off; colormap gray; title('MRI');
-nexttile
-imagesc(uct_m_tmp>0); axis square; axis off; colormap gray; title('uCT');
-nexttile
-imagesc(imfuse(mri_m_tmp>0, uct_m_tmp>0)); axis square; axis off; title('Image Overlap'); hold on; legend([scatter([],[],10,[0 1 0],'filled') scatter([],[],10,[1 0 1],'filled')],{'MRI','uCT'}); hold off;
-title(fig1, '2D Binary Masks')
+plotmygraph(mri_i_seum, 'MRI SE UM Images'); 
 
-figure('Name', 'm', 'NumberTitle', 'off'); fig2 = tiledlayout('flow', 'TileSpacing', 'compact', 'Padding', 'compact');
-nexttile
-imagesc(mri_m_tmp); axis square; axis off; colormap gray; title('MRI');
-nexttile
-imagesc(uct_m_tmp); axis square; axis off; colormap gray; title('uCT');
-nexttile
-imagesc(imfuse(mri_m_tmp, uct_m_tmp)); axis square; axis off; title('Image Overlap'); hold on; legend([scatter([],[],10,[0 1 0],'filled') scatter([],[],10,[1 0 1],'filled')],{'MRI','uCT'}); hold off;
-title(fig2, '2D Masks')
-
-figure('Name', 'i', 'NumberTitle', 'off'); fig3 = tiledlayout('flow', 'TileSpacing', 'compact', 'Padding', 'compact');
-nexttile
-imagesc(mri_i_tmp); axis square; axis off; colormap gray; title('MRI');
-nexttile
-imagesc(uct_i_tmp); axis square; axis off; colormap gray; title('uCT');
-nexttile
-imagesc(imfuse(mri_i_tmp, uct_i_tmp)); axis square; axis off; title('Image Overlap'); hold on; legend([scatter([],[],10,[0 1 0],'filled') scatter([],[],10,[1 0 1],'filled')],{'MRI','uCT'}); hold off;
-title(fig3, '2D Images')
+plotmygraph(mri_i_geum, 'MRI GRE UM Images'); 
 
 plotmygraph(mri_i_fs, 'MRI SE Images'); 
 
@@ -521,63 +496,7 @@ disp(data)
 % 
 % I = mutualInfo(uct_i_FNrs(:,:,4), mri_i_fs(:,:,4));
 
-%%
-[uct_i_FNrs2, uct_m_FNrs2] = CT_reslicer_v3(uct_i_FN, uct_m_FN, resdiff, [1, 3], size(mri_i_fs,3) + 3);
-plotmygraph(fliplr(flipud(uct_i_FNrs2)), 'all microCT') %#ok<FLUDLR>
 %% Functions
-
-% Calculate mutual information index for given slice set
-function I = MII(A, B)
-% Preallocate data
-I = zeros(1,size(A,3));
-
-% Calculate mutual information
-for i = 1:length(I)
-    I(i) = mutualInfo(A, B);
-end
-
-I = mean(I);
-end
-
-% Determine best result
-function MT_bi = IsolateBest(met, RT, nume, numE)
-% Find best
-[~, MT_bi1] = maxk(met(:,1), nume);
-[~, MT_bi2] = maxk(met(:,2), nume);
-
-% Combine all best into one array
-MT_bi = intersect(MT_bi1, MT_bi2, 'stable');
-
-% Check if none meet requirements
-if isempty(MT_bi)
-
-    % Convert rotations to radians
-    RT_b1 = deg2rad(RT(:,MT_bi1).');
-    RT_b2 = deg2rad(RT(:,MT_bi2).');
-
-    % Repeat comparison matrices to allow for every combination
-    RT_b1rep = repmat(RT_b1, [size(RT_b1,1), 1]);
-    RT_b2rep = repmat(RT_b2, [size(RT_b1,1), 1]);
-    for k = 1:length(MT_bi1)-1
-        RT_b1rep((k-1)*size(RT_b1,1)+1:k*size(RT_b1,1),:) = circshift(RT_b1, [k 0]);
-    end
-
-    % Compare rotations to identify which are closest
-    RT_comparisons = sum(abs(angdiff(RT_b1rep, RT_b2rep)),2);
-
-    % Isolate closest rotations
-    [~, RT_closesti] = mink(RT_comparisons, numE);
-    RT_closest = round(rad2deg(RT_b1rep(RT_closesti,:)));
-
-    % Identify index of these rotations
-    MT_bi = ismember(RT.', RT_closest, 'rows');
-    MT_bi = find(MT_bi == true);
-end
-
-if length(MT_bi) > numE
-    MT_bi = MT_bi(1:numE);
-end
-end
 
 % Centers 2D & 3D data
 function [diff, imcs, varargout] = CentShift(im, m)
@@ -603,7 +522,7 @@ if size(m, 3) > 1
     cent = round(cent.Centroid(trueROI,:));
 
     % Find offset from center
-    diff = [round(size(m,1)/2)-cent(2), round(size(m,2)/2)-cent(1), round(size(m,2)/2)-cent(3)];
+    diff = [round(size(m,1)/2)-cent(2), round(size(m,2)/2)-cent(1), round(size(m,3)/2)-cent(3)];
 else
     cent = regionprops(m, 'Centroid'); 
     cent = round(cat(1, cent.Centroid));
@@ -800,7 +719,7 @@ RM = zeros(size(R,1), size(R,1), size(R,2), 'like', R);
 % Calculate rotational matrices
 RM(1,:,:) = [cosd(R(2,:)).*cosd(R(3,:)); sind(R(1,:)).*sind(R(2,:)).*cosd(R(3,:))-cosd(R(1,:)).*sind(R(3,:)); cosd(R(1,:)).*sind(R(2,:)).*cosd(R(3,:))+sind(R(1,:)).*sind(R(3,:))];
 RM(2,:,:) = [cosd(R(2,:)).*sind(R(3,:)); sind(R(1,:)).*sind(R(2,:)).*sind(R(3,:))+cosd(R(1,:)).*cosd(R(3,:)); cosd(R(1,:)).*sind(R(2,:)).*sind(R(3,:))-sind(R(1,:)).*cosd(R(3,:))];
-RM(3,:,:) = [-sind(R(2,:)); sind(R(1,:)).*cosd(R(2,:)); cosd(R(1,:)).*cosd(R(2,:))];
+RM(3,:,:) = [-sind(R(2,:));              sind(R(1,:)).*cosd(R(2,:));                                          cosd(R(1,:)).*cosd(R(2,:))];
 
 % q = 100;
 % RMt = [cosd(R(2,q)).*cosd(R(3,q)), sind(R(1,q)).*sind(R(2,q)).*cosd(R(3,q))-cosd(R(1,q)).*sind(R(3,q)), cosd(R(1,q)).*sind(R(2,q)).*cosd(R(3,q))+sind(R(1,q)).*sind(R(3,q));
@@ -832,15 +751,129 @@ end
 Rcorr = Rcorr(:,1:I);
 end
 
+% Remove extrema that are too close
+function MT_bi = CloseExtrRmv(MT_bi, RT, qth)
+% Initialize increment
+i1 = 1;
+
+% Begin evaluation
+while i1 < length(MT_bi)
+    % Initialize first quaternion
+    q1 = quaternion(RT(:,MT_bi(i1)).', 'eulerd', 'XYZ', 'point');
+
+    % Compare distance from other extrema
+    for i2 = (i1+1):length(MT_bi)
+        % Initialize second quaternion
+        q2 = quaternion(RT(:,MT_bi(i2)).', 'eulerd', 'XYZ', 'point');
+
+        % Calculate distance
+        qdist = dist(q1, q2)*180/pi;
+
+        % Replace with NaN if distance is less than threshold
+        if qdist < qth
+            MT_bi(i2) = NaN;
+        end
+    end
+
+    % Remove close extrema
+    MT_bi = rmmissing(MT_bi);
+
+    % Shift increment
+    i1 = i1 + 1;
+end
+end
+
+% Determine best result
+function MT_bi = IsolateBest(met, RT, nume, numE)
+% Find best (rotations which have highest DICE & RMSE)
+[~, MT_bi1] = maxk(met(:,1), nume);
+[~, MT_bi2] = maxk(met(:,2), nume);
+
+% Isolate common rotations between the two arrays
+MT_bi = intersect(MT_bi1, MT_bi2, 'stable');
+
+% Check if none meet requirements
+if isempty(MT_bi)
+    % Convert rotations to radians
+    RT_b1 = deg2rad(RT(:,MT_bi1).');
+    RT_b2 = deg2rad(RT(:,MT_bi2).');
+
+    % Repeat comparison matrices to allow for every combination
+    RT_b1rep = repmat(RT_b1, [size(RT_b1,1), 1]);
+    RT_b2rep = repmat(RT_b2, [size(RT_b1,1), 1]);
+    for k = 1:length(MT_bi1)-1
+        RT_b1rep((k-1)*size(RT_b1,1)+1:k*size(RT_b1,1),:) = circshift(RT_b1, [k 0]);
+    end
+
+    % Compare rotations to identify which are closest
+    RT_comparisons = sum(abs(angdiff(RT_b1rep, RT_b2rep)),2);
+
+    % Isolate closest rotations
+    [~, RT_closesti] = mink(RT_comparisons, numE);
+    RT_closest = round(rad2deg(RT_b1rep(RT_closesti,:)));
+
+    % Identify index of these rotations
+    MT_bi = ismember(RT.', RT_closest, 'rows');
+    MT_bi = find(MT_bi == true);
+end
+
+if length(MT_bi) > numE
+    MT_bi = MT_bi(1:numE);
+end
+end
+
+% Transform image & convert to 2D mask
+function MSK = Trans2Mask(img, R, Rin, method, th, B)
+
+% Clarify # iterations & iterator, based off input
+switch nargin
+    case 5
+        inum = size(R,2); I = 1:inum;
+    case 6
+        inum = size(B,1); I = B;
+    otherwise
+        error('Incorrect number of input arguments.')
+end
+
+% Preallocate data
+MSK = zeros(size(img,1), size(img,2), inum, 'like', img);
+
+for i = 1:inum
+
+    % Create affine transform
+    tform = rigidtform3d(squeeze(R(:,I(i)).'), [0 0 0]);
+
+    % Transform image
+    % tmp = imwarpcustom(i_test, Rin, tform, ipmethod, affineOutputView(size(i_test), tform, "BoundsStyle","CenterOutput"));
+    tmp = imwarp(img, Rin, tform, method, "OutputView", affineOutputView(size(img), tform, "BoundsStyle", "CenterOutput"));
+
+    % Create mask
+    if ~strcmp(method, 'cubic')
+        tmp = tmp > th;
+    else
+        tmp = GenMask(tmp, th);
+    end
+
+    % Convert to 2D
+    tmp = sum(tmp, 3);
+
+    % Add into array
+    MSK(:,:,i) = tmp;
+end
+
+% Normalize
+MSK = (MSK - min(MSK,[],[1 2]))./(max(MSK,[],[1 2]) - min(MSK,[],[1 2]));
+end
+
 % Apply high resolution rotation to image data
-function [IMG, MSK] = RotateData(img, RT, method, Rin, th)
+function [IMG, MSK] = RotateData(img, R, Rin, th)
 
 % Create affine transform
-tform = rigidtform3d(squeeze(RT.'), [0 0 0]);
+tform = rigidtform3d(squeeze(R.'), [0 0 0]);
 
 % Transform image
-% IMG = imwarpcustom(i_test, Rin, tform, method, affineOutputView(size(i_test), tform, "BoundsStyle","CenterOutput"));
-IMG = imwarp(img, Rin, tform, method, "OutputView", affineOutputView(size(img), tform, "BoundsStyle", "CenterOutput"));
+% IMG = imwarpcustom(i_test, Rin, tform, ipmethod, affineOutputView(size(i_test), tform, "BoundsStyle","CenterOutput"));
+IMG = imwarp(img, Rin, tform, 'cubic', "OutputView", affineOutputView(size(img), tform, "BoundsStyle", "CenterOutput"));
 
 % Trim to correct size (if applicable)
 if any(size(IMG) ~= size(img)); IMG = ROITrim(IMG, size(img)); end
@@ -849,17 +882,202 @@ if any(size(IMG) ~= size(img)); IMG = ROITrim(IMG, size(img)); end
 IMG = Norm01(IMG);
 
 % Create mask
-if strcmp(method, 'linear')
-    MSK = IMG > th;
+MSK = GenMask(IMG, th);
+end
+
+% Reslice uCT data to match MRI slices
+function [i_CT, m_CT, varargout] = Reslice(i_ct, m_ct, r, inp4, inp5)
+% Determine indices of start/stop for mri slices in ct
+ibase = 0:r:size(i_ct,3); % base starts & stops
+ifull(1,:) = ceil(ibase(1:end-1))+1; % first full slices
+ifull(2,:) = floor(ibase(2:end)); % last full slices
+
+% Find non-integer amounts contributing to slices
+ipart(1,:) = ceil(ibase(1:end-1))-ibase(1:end-1);
+ipart(2,:) = ibase(2:end)-floor(ibase(2:end));
+
+% Determine what to do with input
+if size(inp4, 1) == 1
+    Bpix = inp4(1); Bslc = inp4(2); 
+    
+    % Isolate first & last slice
+    firstslice = 1 + Bslc;
+    lastslice = inp5;
+
+    % Reslice data
+    i_CT = SliceCombine(i_ct, ifull+Bpix, ipart);
+    m_CT = SliceCombine(m_ct, ifull+Bpix, ipart);
+    i_CT = i_CT(:,:,firstslice:lastslice);
+    m_CT = m_CT(:,:,firstslice:lastslice);
 else
-    MSK = GenMask(IMG, th);
+    i_mri = inp4; m_mri = inp5;
+
+    % Determine size difference of data
+    slcdiff = size(ifull,2)-size(i_mri,3);
+    pixdiff = size(i_ct,3)-ifull(2,end);
+
+    % Preallocate data
+    MTpix = zeros(pixdiff+1, 2);
+    Bslc = zeros(pixdiff+1, 1);
+
+    % Compare CT slice assignments with available subslice offsets. Last offset
+    % is excluded, since partial pixel addition would extend past matrix bounds.
+    for pixofs = 0:pixdiff
+        % fprintf('\nTesting a subslice offset of %i pixel(s).\n', pix)
+        i_CT = SliceCombine(i_ct, ifull+pixofs, ipart);
+        m_CT = SliceCombine(m_ct, ifull+pixofs, ipart);
+
+        % For extra slices in CT data, determine offset with MRI
+        % Preallocate data
+        MTslc = zeros(slcdiff+1, 2);
+        for slcofs = 0:slcdiff
+
+            % Isolate current number of slices
+            i_CT_ofs = i_CT(:,:,1+slcofs:end-slcdiff+slcofs);
+            m_CT_ofs = m_CT(:,:,1+slcofs:end-slcdiff+slcofs);
+
+            MTslc(1+slcofs,:) = custommetrics(i_CT_ofs, m_CT_ofs, i_mri, m_mri, 3);
+        end
+
+        % Mostly vectorized version of above code. It is less efficient.
+        % % For extra slices in CT data, determine offset with MRI
+        % % Preallocate data
+        % met_ofs = zeros(size(i_CT,3)-size(mri,3)+1,size(i_CT,3)-size(mri,3));
+        % CT_ofs = zeros(size(i_CT,1), size(i_CT,2), size(mri,3), size(i_CT,3)-size(mri,3));
+        % for slc = 0:size(i_CT,3)-size(mri,3)
+        %     % Isolate current number of slices
+        %     CT_ofs(:,:,:,slc+1) = i_CT(:,:,1+slc:end-(size(i_CT,3)-size(mri,3))+slc);
+        % end
+        %
+        % % RMSE
+        % RMSE = sqrt(squeeze(sum((mri - CT_ofs).^2,[1 2]))./(size(CT_ofs,1)*size(CT_ofs,2)));
+        %
+        % % dice parameters
+        % CTm = CT_ofs > 0;
+        % area_i = squeeze(sum(CTm.*m_mri, [1 2]));
+        % area_t = (squeeze(sum(CTm, [1 2])) + squeeze(sum(m_mri, [1 2])));
+        %
+        % % dice
+        % dsc = 2.*area_i./area_t;
+        %
+        % met_ofs = mean(dsc - RMSE);
+
+        % Find best
+        Bslc(1+pixofs) = IsolateBestRS(MTslc)-1;
+
+        % Isolate best from the rest
+        i_CT = i_CT(:,:,1+Bslc(1+pixofs):end-slcdiff+Bslc(1+pixofs));
+        m_CT = m_CT(:,:,1+Bslc(1+pixofs):end-slcdiff+Bslc(1+pixofs));
+
+        % fprintf('For a %i pixel subslice offset, a %i slice offset was best.\n', pix, Bslc(1+pix))
+
+        % Evaluate
+        MTpix(1+pixofs,:) = custommetrics(i_CT, m_CT, i_mri, m_mri, 3);
+    end
+
+    % Find best
+    Bpix = IsolateBestRS(MTpix);
+
+    % Isolate best from the rest
+    Bslc = Bslc(Bpix); Bpix = Bpix-1;
+
+    % Isolate correct slice & pixel values by adding the best offsets
+    firstslice = 1 + Bslc;
+    lastslice = size(i_mri,3) + Bslc;
+    % firstpixel = ifull(1,firstslice) + Bpix;
+    % lastpixel = ifull(2,lastslice) + Bpix;
+    % fprintf('\nOverall best results obtained with offsets of %i pixel(s) and %i slice(s).\n', Bpix, Bslc)
+    % fprintf('This includes slices %i to %i and pixels %i to %i, plus %.4f and %.4f of pixels %i and %i, respectively.\n', firstslice, lastslice, firstpixel, lastpixel, ipart(1,firstslice), ipart(2,lastslice), firstpixel-1, lastpixel+1)
+    i_CT = SliceCombine(i_ct, ifull+Bpix, ipart);
+    m_CT = SliceCombine(m_ct, ifull+Bpix, ipart);
+    i_CT = i_CT(:,:,firstslice:lastslice);
+    m_CT = m_CT(:,:,firstslice:lastslice);
+
+    % Set necessary variables as outputs
+    varargout{1} = Bpix;
+    varargout{2} = Bslc;
+end
+
+% Determine best result
+function B = IsolateBestRS(met)
+nume = 10; % number of extrema before combination
+
+% Find best
+[~, met_bi1] = maxk(met(:,1), nume);
+[~, met_bi2] = maxk(met(:,2), nume);
+
+% Combine all best into one array
+B = intersect(met_bi1, met_bi2, 'stable');
+
+% Check if none meet requirements
+if isempty(B)
+
+    % Create array of li values for best mi values
+    met_tmp = nan(size(met(:,2))); met_tmp(met_bi1) = met(met_bi1,2);
+
+    % Find max
+    [~, B] = max(met_tmp);
+end
+B = B(1);
+end
+
+% Combine microCT slices into MRI slices
+function IMG = SliceCombine(img, ifull, ipart)
+% Preallocate data
+IMG = zeros(size(img,1), size(img,2), size(ifull,2), 'like', img);
+
+% Check if on last pixel slice offset
+if ifull(2,end) == size(img,3)
+    % Flip partial slices so we go in reverse
+    ipart = fliplr(ipart);
+
+    % Update loop parameters
+    ystart = 1;
+    ystop = size(ifull,2)-1;
+
+    % Hard code last iteration (last slice should end at an integer)
+    IMG(:,:,end) = sum(img(:,:,ifull(1,end):ifull(2,end)), 3) + img(:,:,ifull(1,end)-1).*ipart(1,end);
+else
+    % Update loop parameters
+    ystart = 2;
+    ystop = size(ifull,2);
+
+    % Hard code first iteration (first slice should start at an integer)
+    IMG(:,:,1) = sum(img(:,:,ifull(1,1):ifull(2,1)), 3) + img(:,:,ifull(2,1)+1).*ipart(2,1);
+end
+for y = ystart:ystop
+    % Sum full slices + part of previous slice + part of next slice
+    IMG(:,:,y) = sum(img(:,:,ifull(1,y):ifull(2,y)), 3) + img(:,:,ifull(1,y)-1).*ipart(1,y) + img(:,:,ifull(2,y)+1).*ipart(2,y);
+end
+
+% Normalize
+IMG = Norm01(IMG);
+
+% Mostly vectorized version of above code. It is less efficient.
+% % Sum full slices + part of previous slice + part of next slice
+% for y = 1:size(ifull,2)
+%     IMG(:,:,y) = sum(img(:,:,ifull(1,y):ifull(2,y)), 3);
+% end
+% % Add partial slice data (excluding index 0)
+% IMG(:,:,2:end) = IMG(:,:,2:end) + img(:,:,ifull(1,2:end)-1).*reshape(ipart(1,2:end), [1,1,size(ipart(1,2:end),2)]);
+% IMG = IMG + img(:,:,ifull(2,:)+1).*reshape(ipart(2,:), [1,1,size(ipart,2)]);
 end
 end
 
-% % Assuming both inputs are same FOV, decreases resolution of first image to match that of second image
-% function img_newres = Downscale2D(img_oldres, imsize)
+% Calculate mutual information index for given slice set
+function I = MII(A, B)
+% Preallocate data
+I = zeros(1,size(A,3));
+
+% Calculate mutual information
+for i = 1:length(I)
+    I(i) = mutualInfo(A, B);
+end
+
+I = mean(I);
+end
+
 % dimlen = size(img_oldres,1); % find image size
-% 
 % kspace = ifftshift(fftn(ifftshift(img_oldres))); % kspace of og data
 % 
 % % Find size difference
