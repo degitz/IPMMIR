@@ -1,11 +1,7 @@
-function [i_CT, m_CT, Bpix, Bslc] = CT_reslicer_v2(i_ct, m_ct, i_mri, m_mri, r)
+function [i_CT, m_CT, varargout] = CT_reslicer(i_ct, m_ct, r, inp4, inp5)
 % ct - ct data
 % mri - mri data
 % r - number of ct slices per mri slice (mri res / ct res)
-
-% % Pad ct data to give us room to play
-% i_ct = padarray(i_ct, [0 0 ceil(r)], 0, 'both');
-% m_ct = padarray(m_ct, [0 0 ceil(r)], false, 'both');
 
 % Determine indices of start/stop for mri slices in ct
 ibase = 0:r:size(i_ct,3); % base starts & stops
@@ -16,89 +12,107 @@ ifull(2,:) = floor(ibase(2:end)); % last full slices
 ipart(1,:) = ceil(ibase(1:end-1))-ibase(1:end-1);
 ipart(2,:) = ibase(2:end)-floor(ibase(2:end));
 
-% Determine size difference of data
-slcdiff = size(ifull,2)-size(i_mri,3);
-pixdiff = size(i_ct,3)-ifull(2,end);
+% Determine what to do with input
+if size(inp4, 1) == 1
+    Bpix = inp4(1); Bslc = inp4(2); 
+    
+    % Isolate first & last slice
+    firstslice = 1 + Bslc;
+    lastslice = inp5;
 
-% Preallocate data
-MTpix = zeros(pixdiff+1, 2);
-Bslc = zeros(pixdiff+1, 1);
+    % Reslice data
+    i_CT = SliceCombine(i_ct, ifull+Bpix, ipart);
+    m_CT = SliceCombine(m_ct, ifull+Bpix, ipart);
+    i_CT = i_CT(:,:,firstslice:lastslice);
+    m_CT = m_CT(:,:,firstslice:lastslice);
+else
+    i_mri = inp4; m_mri = inp5;
 
-% Compare CT slice assignments with available subslice offsets. Last offset
-% is excluded, since partial pixel addition would extend past matrix bounds.
-for pixofs = 0:pixdiff
-    % fprintf('\nTesting a subslice offset of %i pixel(s).\n', pix)
-    i_CT = SliceCombine(i_ct, ifull+pixofs, ipart);
-    m_CT = SliceCombine(m_ct, ifull+pixofs, ipart);
+    % Determine size difference of data
+    slcdiff = size(ifull,2)-size(i_mri,3);
+    pixdiff = size(i_ct,3)-ifull(2,end);
 
-    % For extra slices in CT data, determine offset with MRI
     % Preallocate data
-    MTslc = zeros(slcdiff+1, 2);
-    for slcofs = 0:slcdiff
+    MTpix = zeros(pixdiff+1, 2);
+    Bslc = zeros(pixdiff+1, 1);
 
-        % Isolate current number of slices
-        i_CT_ofs = i_CT(:,:,1+slcofs:end-slcdiff+slcofs);
-        m_CT_ofs = m_CT(:,:,1+slcofs:end-slcdiff+slcofs);
+    % Compare CT slice assignments with available subslice offsets. Last offset
+    % is excluded, since partial pixel addition would extend past matrix bounds.
+    for pixofs = 0:pixdiff
+        % fprintf('\nTesting a subslice offset of %i pixel(s).\n', pix)
+        i_CT = SliceCombine(i_ct, ifull+pixofs, ipart);
+        m_CT = SliceCombine(m_ct, ifull+pixofs, ipart);
 
-        MTslc(1+slcofs,:) = custommetrics(i_CT_ofs, m_CT_ofs, i_mri, m_mri, 3);
+        % For extra slices in CT data, determine offset with MRI
+        % Preallocate data
+        MTslc = zeros(slcdiff+1, 2);
+        for slcofs = 0:slcdiff
+
+            % Isolate current number of slices
+            i_CT_ofs = i_CT(:,:,1+slcofs:end-slcdiff+slcofs);
+            m_CT_ofs = m_CT(:,:,1+slcofs:end-slcdiff+slcofs);
+
+            MTslc(1+slcofs,:) = custommetrics(i_CT_ofs, m_CT_ofs, i_mri, m_mri, 3);
+        end
+
+        % Mostly vectorized version of above code. It is less efficient.
+        % % For extra slices in CT data, determine offset with MRI
+        % % Preallocate data
+        % met_ofs = zeros(size(i_CT,3)-size(mri,3)+1,size(i_CT,3)-size(mri,3));
+        % CT_ofs = zeros(size(i_CT,1), size(i_CT,2), size(mri,3), size(i_CT,3)-size(mri,3));
+        % for slc = 0:size(i_CT,3)-size(mri,3)
+        %     % Isolate current number of slices
+        %     CT_ofs(:,:,:,slc+1) = i_CT(:,:,1+slc:end-(size(i_CT,3)-size(mri,3))+slc);
+        % end
+        %
+        % % RMSE
+        % RMSE = sqrt(squeeze(sum((mri - CT_ofs).^2,[1 2]))./(size(CT_ofs,1)*size(CT_ofs,2)));
+        %
+        % % dice parameters
+        % CTm = CT_ofs > 0;
+        % area_i = squeeze(sum(CTm.*m_mri, [1 2]));
+        % area_t = (squeeze(sum(CTm, [1 2])) + squeeze(sum(m_mri, [1 2])));
+        %
+        % % dice
+        % dsc = 2.*area_i./area_t;
+        %
+        % met_ofs = mean(dsc - RMSE);
+
+        % Find best
+        Bslc(1+pixofs) = IsolateBest(MTslc)-1;
+
+        % Isolate best from the rest
+        i_CT = i_CT(:,:,1+Bslc(1+pixofs):end-slcdiff+Bslc(1+pixofs));
+        m_CT = m_CT(:,:,1+Bslc(1+pixofs):end-slcdiff+Bslc(1+pixofs));
+
+        % fprintf('For a %i pixel subslice offset, a %i slice offset was best.\n', pix, Bslc(1+pix))
+
+        % Evaluate
+        MTpix(1+pixofs,:) = custommetrics(i_CT, m_CT, i_mri, m_mri, 3);
     end
 
-    % Mostly vectorized version of above code. It is less efficient.
-    % % For extra slices in CT data, determine offset with MRI
-    % % Preallocate data
-    % met_ofs = zeros(size(i_CT,3)-size(mri,3)+1,size(i_CT,3)-size(mri,3));
-    % CT_ofs = zeros(size(i_CT,1), size(i_CT,2), size(mri,3), size(i_CT,3)-size(mri,3));
-    % for slc = 0:size(i_CT,3)-size(mri,3)
-    %     % Isolate current number of slices
-    %     CT_ofs(:,:,:,slc+1) = i_CT(:,:,1+slc:end-(size(i_CT,3)-size(mri,3))+slc);
-    % end
-    % 
-    % % RMSE
-    % RMSE = sqrt(squeeze(sum((mri - CT_ofs).^2,[1 2]))./(size(CT_ofs,1)*size(CT_ofs,2)));
-    % 
-    % % dice parameters
-    % CTm = CT_ofs > 0; 
-    % area_i = squeeze(sum(CTm.*m_mri, [1 2]));
-    % area_t = (squeeze(sum(CTm, [1 2])) + squeeze(sum(m_mri, [1 2])));
-    % 
-    % % dice
-    % dsc = 2.*area_i./area_t;
-    % 
-    % met_ofs = mean(dsc - RMSE);
-
     % Find best
-    Bslc(1+pixofs) = IsolateBest(MTslc)-1;
+    Bpix = IsolateBest(MTpix);
 
     % Isolate best from the rest
-    i_CT = i_CT(:,:,1+Bslc(1+pixofs):end-slcdiff+Bslc(1+pixofs));
-    m_CT = m_CT(:,:,1+Bslc(1+pixofs):end-slcdiff+Bslc(1+pixofs));
+    Bslc = Bslc(Bpix); Bpix = Bpix-1;
 
-    % fprintf('For a %i pixel subslice offset, a %i slice offset was best.\n', pix, Bslc(1+pix))
+    % Isolate correct slice & pixel values by adding the best offsets
+    firstslice = 1 + Bslc;
+    lastslice = size(i_mri,3) + Bslc;
+    % firstpixel = ifull(1,firstslice) + Bpix;
+    % lastpixel = ifull(2,lastslice) + Bpix;
+    % fprintf('\nOverall best results obtained with offsets of %i pixel(s) and %i slice(s).\n', Bpix, Bslc)
+    % fprintf('This includes slices %i to %i and pixels %i to %i, plus %.4f and %.4f of pixels %i and %i, respectively.\n', firstslice, lastslice, firstpixel, lastpixel, ipart(1,firstslice), ipart(2,lastslice), firstpixel-1, lastpixel+1)
+    i_CT = SliceCombine(i_ct, ifull+Bpix, ipart);
+    m_CT = SliceCombine(m_ct, ifull+Bpix, ipart);
+    i_CT = i_CT(:,:,firstslice:lastslice);
+    m_CT = m_CT(:,:,firstslice:lastslice);
 
-    % Evaluate
-    MTpix(1+pixofs,:) = custommetrics(i_CT, m_CT, i_mri, m_mri, 3);
+    % Set necessary variables as outputs
+    varargout{1} = Bpix;
+    varargout{2} = Bslc;
 end
-
-% Find best
-Bpix = IsolateBest(MTpix);
-
-% Isolate best from the rest
-Bslc = Bslc(Bpix); Bpix = Bpix-1;
-
-% Isolate correct slice & pixel values by adding the best offsets
-firstslice = 1 + Bslc;
-lastslice = size(i_mri,3) + Bslc;
-% firstpixel = ifull(1,firstslice) + Bpix;
-% lastpixel = ifull(2,lastslice) + Bpix;
-% fprintf('\nOverall best results obtained with offsets of %i pixel(s) and %i slice(s).\n', Bpix, Bslc)
-% fprintf('This includes slices %i to %i and pixels %i to %i, plus %.4f and %.4f of pixels %i and %i, respectively.\n', firstslice, lastslice, firstpixel, lastpixel, ipart(1,firstslice), ipart(2,lastslice), firstpixel-1, lastpixel+1)
-i_CT = SliceCombine(i_ct, ifull+Bpix, ipart);
-m_CT = SliceCombine(m_ct, ifull+Bpix, ipart);
-i_CT = i_CT(:,:,firstslice:lastslice);
-m_CT = m_CT(:,:,firstslice:lastslice);
-
-% % Now subtract out added slice from padding the input data
-% Bslc = Blsc - 1;
 end
 
 % Determine best result
