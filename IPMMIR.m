@@ -20,7 +20,7 @@ rsval = [64, 96, 128]; % resize value
 a = [30, 10, 2, 1]; % rotation resolutions & ranges for transformation
 ar = [360, 60, 12, 6];
 numE = [5, 4, 3, 1]; % number of local extrema
-nume = 30; % number of local extrema before intersection
+nume = 10; % number of local extrema before intersection
 S = length(a); % number of iterations
 
 %%% Load MRI data
@@ -134,7 +134,7 @@ toc
 clear roidiff
 
 %% Transform & Evaluate
-B_all = 1; R = [180; 180; 180]; a_iou = []; a_dce = []; a_RMSE = []; % initial
+Bi_all = 1; R = [180; 180; 180]; a_iou = []; a_dce = []; a_RMSE = []; fr = []; % initial
 
 for s = 1:S
     fprintf('\n--------------------------- Phase %i ---------------------------\n', s)
@@ -154,29 +154,29 @@ for s = 1:S
     fprintf('\nTesting the following degree range(s) with a %i degree step size:\n', a(s))
 
     % Determine if any groups overlap
-    ccheck = false(length(B_all), 1);
-    Rbase = R(:,B_all); % angle base
+    ccheck = false(length(Bi_all), 1);
+    Rbase = R(:,Bi_all); % angle base
     Rmax = Rbase + ar(s)/2; % angle max
     Rmin = Rbase - ar(s)/2; % angle min
 
     % Correct for 360 values
     Rmax(Rmax==360) = 0;
-    r = zeros(6, length(B_all));
+    r = zeros(6, length(Bi_all));
 
     % Find all rotation angles with no repeats
-    for m = 1:length(B_all)
+    for m = 1:length(Bi_all)
         % Obtain rotation angles
-        rx = ((R(1,B_all(m))-ar(s)/2):a(s):(R(1,B_all(m))+ar(s)/2));
-        ry = ((R(2,B_all(m))-ar(s)/2):a(s):(R(2,B_all(m))+ar(s)/2));
-        rz = ((R(3,B_all(m))-ar(s)/2):a(s):(R(3,B_all(m))+ar(s)/2));
+        rx = (R(1,Bi_all(m))-ar(s)/2):a(s):(R(1,Bi_all(m))+ar(s)/2);
+        ry = (R(2,Bi_all(m))-ar(s)/2):a(s):(R(2,Bi_all(m))+ar(s)/2);
+        rz = (R(3,Bi_all(m))-ar(s)/2):a(s):(R(3,Bi_all(m))+ar(s)/2);
 
         % Skips for overlapping groups
         if ccheck(m) == true
             continue
         end
 
-        if m < length(B_all)
-            for l = 1:(length(B_all)-m)
+        if m < length(Bi_all)
+            for l = 1:(length(Bi_all)-m)
                 % Skip checks with already combined groups
                 if ccheck(m+l) == true
                     continue
@@ -194,9 +194,9 @@ for s = 1:S
                     % Check for & resolve intersects
                     if sum(Tint1)+sum(Tequ) == 3
                         % Update ranges
-                        rx = ((R(1,B_all(m))-ar(s)/2):a(s):(R(1,B_all(m+Tint1(1)*l))+ar(s)/2)); % start at current group, stop at next group
-                        ry = ((R(2,B_all(m))-ar(s)/2):a(s):(R(2,B_all(m+Tint1(2)*l))+ar(s)/2));
-                        rz = ((R(3,B_all(m))-ar(s)/2):a(s):(R(3,B_all(m+Tint1(3)*l))+ar(s)/2));
+                        rx = (R(1,Bi_all(m))-ar(s)/2):a(s):(R(1,Bi_all(m+Tint1(1)*l))+ar(s)/2); % start at current group, stop at next group
+                        ry = (R(2,Bi_all(m))-ar(s)/2):a(s):(R(2,Bi_all(m+Tint1(2)*l))+ar(s)/2);
+                        rz = (R(3,Bi_all(m))-ar(s)/2):a(s):(R(3,Bi_all(m+Tint1(3)*l))+ar(s)/2);
 
                         % Add check
                         ccheck(m+l) = true;
@@ -206,12 +206,12 @@ for s = 1:S
                         Rbase(:,m) = ((Rmax(:,m) - Rmin(:,m))./2) + Rmin(:,m);
                     elseif sum(Tint2)+sum(Tequ) == 3
                         % Correct for any wraps
-                        corr = R(:,B_all(m+l)) - (Tint2.*360);
+                        corr = R(:,Bi_all(m+l)) - (Tint2.*360);
 
                         % Update ranges
-                        rx = ((corr(1)-ar(s)/2):a(s):(R(1,B_all(m))+ar(s)/2)); % start at next group, start at current group
-                        ry = ((corr(2)-ar(s)/2):a(s):(R(2,B_all(m))+ar(s)/2));
-                        rz = ((corr(3)-ar(s)/2):a(s):(R(3,B_all(m))+ar(s)/2));
+                        rx = (corr(1)-ar(s)/2):a(s):(R(1,Bi_all(m))+ar(s)/2); % start at next group, start at current group
+                        ry = (corr(2)-ar(s)/2):a(s):(R(2,Bi_all(m))+ar(s)/2);
+                        rz = (corr(3)-ar(s)/2):a(s):(R(3,Bi_all(m))+ar(s)/2);
 
                         % Add check
                         ccheck(m+l) = true;
@@ -259,25 +259,35 @@ for s = 1:S
     % Transform uCT data
     [m_test_uct] = Trans2Mask(i_test_uct, Rnew, Rin, ipmethod, thresh);
 
-    toc
+    % Update full-resolution check (log to see whether the angle has been evaluated at-full resolution)
+    if size(m_test_uct,1) ~= size(m_fs_uct,1)
+        fr = [fr; false(size(m_test_uct,3), 1)]; %#ok<AGROW>
+    else
+        fr = [fr; true(size(m_test_uct,3), 1)]; %#ok<AGROW>
+    end
 
     % Evaluate rotatated FOV
     [dcetemp, ioutemp, RMSEtemp] = TransEval(m_test_uct, m_test_mri);
     a_iou = [a_iou; ioutemp]; a_dce = [a_dce; dcetemp]; a_RMSE = [a_RMSE; RMSEtemp]; %#ok<AGROW>
 
     % Find best FOV
-    [~, B_dce] = maxk(a_dce, nume); % best dice values
-    [~, B_iou] = maxk(a_iou, nume); % best iou values
-    [~, B_RMSE] = mink(a_RMSE, nume); % best RMSE values
+    [~, Bi_dce] = maxk(a_dce, nume); % best dice values
+    [~, Bi_iou] = maxk(a_iou, nume); % best iou values
+    [~, Bi_RMSE] = mink(a_RMSE, nume); % best RMSE values
 
-    % Recalculate values if not last iteration
-    if s ~= S
-        % Get all "best" values
-        B_all = union(B_dce, B_RMSE, 'stable');
+    % Get all "best" values
+    Bi_all = union(Bi_dce, Bi_RMSE, 'stable');
 
-        fprintf('\nRe-testing the following angles at full resolution:\n')
-        data = table(R(:,B_all).', a_dce(B_all), a_iou(B_all), a_RMSE(B_all), 'RowNames', string(B_all));
-        data.Properties.VariableNames = {'Rotation', 'dice', 'iou', 'RMSE'};
+    toc
+
+    % Retransform & evaluate if any results listed as best were not found at full resolution
+    if all(fr(Bi_all)) == false; fprintf('\nRe-testing the following angles at full resolution:\n'); end
+    while all(fr(Bi_all)) == false
+        % Find which angles were not tested at full resolution
+        fri = intersect(find(fr == false), Bi_all);
+
+        data = table(R(:,fri).', a_dce(fri), a_iou(fri), a_RMSE(fri), fr(fri), 'RowNames', string(fri));
+        data.Properties.VariableNames = {'Rotation', 'dice', 'iou', 'RMSE', 'FReval'};
         data = sortrows(data, {'dice', 'RMSE'},{'descend', 'ascend'});
         disp(data)
 
@@ -287,46 +297,51 @@ for s = 1:S
 
         % Re-transformation & re-evalution
         % Note: "R" is used instead of "Rnew" since indices listed in "B_all" are wrt "R"
-        [m_test_uct] = Trans2Mask(i_fs_uct, R, Rin, 'cubic', thresh, B_all);
+        [m_test_uct] = Trans2Mask(i_fs_uct, R, Rin, 'cubic', thresh, fri);
 
-        toc
+        % Update full-resolution check
+        fr(fri) = true(length(fri), 1);
 
         % Evaluate new data
         [dcetemp, ioutemp, RMSEtemp] = TransEval(m_test_uct, m_test_mri);
-        a_iou(B_all) = ioutemp;
-        a_dce(B_all) = dcetemp;
-        a_RMSE(B_all) = RMSEtemp;
+        a_iou(fri) = ioutemp;
+        a_dce(fri) = dcetemp;
+        a_RMSE(fri) = RMSEtemp;
 
         % Find best FOV
-        [~, B_dce] = maxk(a_dce, nume); % best dice values
-        [~, B_iou] = maxk(a_iou, nume); % best iou values
-        [~, B_RMSE] = mink(a_RMSE, nume); % best RMSE values
+        [~, Bi_dce] = maxk(a_dce, nume); % best dice values
+        [~, Bi_iou] = maxk(a_iou, nume); % best iou values
+        [~, Bi_RMSE] = mink(a_RMSE, nume); % best RMSE values
+
+        % Get all "best" values
+        Bi_all = union(Bi_dce, Bi_RMSE, 'stable');
     end
 
     % Find overall best rotations
-    B_all = intersect(B_dce, B_iou); B_all = intersect(B_all, B_RMSE);
+    Bi_all = intersect(Bi_dce, Bi_iou); Bi_all = intersect(Bi_all, Bi_RMSE);
 
     % Check for no intersections
-    if isempty(B_all)
+    if isempty(Bi_all)
         % Create array of RMSE values for best dice/iou values
-        RMSEtemp = ones(size(a_RMSE)); RMSEtemp(B_dce) = a_RMSE(B_dce);
+        RMSEtemp = ones(size(a_RMSE)); RMSEtemp(Bi_dce) = a_RMSE(Bi_dce);
 
         % Find max
-        [~, B_all] = mink(RMSEtemp, numE(s));
-    elseif length(B_all) > numE(s)
-        B_all = B_all(1:numE(s));
+        [~, Bi_all] = mink(RMSEtemp, numE(s));
+    elseif length(Bi_all) > numE(s)
+        Bi_all = Bi_all(1:numE(s));
     end
 
-    data = table(R(:,B_all).', a_dce(B_all), a_iou(B_all), a_RMSE(B_all), 'RowNames', string(B_all));
+    data = table(R(:,Bi_all).', a_dce(Bi_all), a_iou(Bi_all), a_RMSE(Bi_all), 'RowNames', string(Bi_all));
     data.Properties.VariableNames = {'Rotation', 'dice', 'iou', 'RMSE'};
     fprintf('\nBest alignment occurred at rotation(s) showed below:\n')
     disp(data)
+
+    toc
 end
 
 %% Show best FOV
-
 % For display
-B = B_all;
+B = Bi_all;
 tform = affinetform3d(rigidtform3d(squeeze(R(:,B).'), [0 0 0]));
 
 % Create MRI & uCT images for display
