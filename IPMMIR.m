@@ -11,24 +11,24 @@ clear; clc; close all;
 tic
 
 % Parameters
-rsval  = [ 64,  96, 128];           % resize value
 a      = [ 30,  10,   2,   1,   1]; % rotation resolutions for transformation
 ar     = [360,  60,  12,   6,   2]; % rotation ranges for transformation
 numE   =       [ 5,   4,   3,   1]; % number of local extrema from previous iteration to test
 nume   = 10;                        % number of local extrema before combination
 W      = 20;                        % max number of while loop iterations for final phase
 roipad = 20;                        % roi padding, # pixels
-th     =  0.25;                     % uCT mask threshold
+th     =  0.25;                     % test mask threshold
 dtype  = 'image';                   % type of data to use in test. Options are 'image' and 'mask'
-tissue = 'oregano';
+tissue = 'dorothy';
+F = 4;                    % number of iterations
 
 %%% Load MRI data
 [im_name, m_name, ~, se_offset] = grmdfs(tissue, 'ssems');
-[~, mri_i_seum, P, ~, ~] = loadfidfancy(im_name);
+[~, mri_i_seum, P, ~, ~] = loadfidfancy('fid', im_name, 'zip', true);
 load(m_name); mri_m_fs = m;
 % Load GRE
 [im_name, m_name, ~] = grmdfs(tissue, 'sgems');
-[~, mri_i_geum, ~, ~, ~] = loadfidfancy(im_name); 
+[~, mri_i_geum, ~, ~, ~] = loadfidfancy('fid', im_name, 'zip', true); 
 load(m_name); mri_m_ge = m; 
 % Circular shift (so it aligns w/ GRE)
 mri_i_seum = circshift(mri_i_seum, se_offset, 1);
@@ -64,23 +64,23 @@ for i = 1:size(mri_i_seum,3) % recombine
 end
 % Apply mask to final imported data
 mri_i_fs = mri_i_seum.*mri_m_fs; mri_i_ge = mri_i_geum.*mri_m_ge;
-
-% Automatic parameters
-res = 0.069447; % resolution of test data, mm
-F = length(a)-1; % number of iterations
+% Isolate FOV size
 fov = P.FOV.fov.ro*10; % field of view, mm
 
 %%% Import uCT data
 uct_i_og = niftiread("C:\Users\jacob\OneDrive - Texas A&M University\TAMU\NMR RF Lab\_Project GRMD\uCT Data\SlicerSaves\Volumes\"+tissue+"_vol.nii");
+% Isolate resolution
+res = niftiinfo("C:\Users\jacob\OneDrive - Texas A&M University\TAMU\NMR RF Lab\_Project GRMD\uCT Data\SlicerSaves\Volumes\"+tissue+"_vol.nii");
+res = res.PixelDimensions(1); % resolution of test data, mm
 % Convert data type to double
 uct_i_og = double(uct_i_og);
 % Reshape & rotate array to correct format (for some reason, it outputs flipped along both axes
 % This moves the "coronal" slices to the sagittal position & rotates 180 along z-axis
 uct_i_og = rot90(permute(uct_i_og, [3 1 2]),2); % 'up resolution' uCT image (in reality, just normal resolution)
-% Ensure data is a cube of 23mm
+% Ensure data is a cube of ref FOV
 for f1 = 1:3
     arrpad = [0 0 0];
-    if size(uct_i_og, f1) < round(fov/res) % number of pixels for 23mm FOV of 69.447um resolution
+    if size(uct_i_og, f1) < round(fov/res) % number of pixels for ref FOV of test resolution
         diff_mri = round(fov/res) - size(uct_i_og, f1);
         if rem(diff_mri,2) == 1
             diff_mri = diff_mri - 1; 
@@ -94,6 +94,32 @@ end
 
 clear diff_mri f1 fov f2 m_name im_name arrpad P m se_offset mri_se_set1 mri_se_set2 mri_ge_set1 mri_ge_set2
 
+%% Determine test parameters
+% Find closest power of 2
+rsmax_uct = nextpow2(size(uct_i_og, 1)) - 1;
+rsmax_mri = nextpow2(size(mri_i_fs, 1)) - 1;
+
+% Keep whichever is smaller
+if rsmax_mri < rsmax_uct
+    rsmax = rsmax_mri;
+else
+    rsmax = rsmax_uct;
+end
+
+% Check if ref data is a power of 2
+if (2^rsmax)*2 == size(mri_i_fs,1)
+    rsmax = rsmax + 1;
+end
+
+% Calculate resize values
+rsval = fliplr(round(2.^(rsmax-(1:F)./F.*2)));
+
+clear rsmax_uct rsmax_mri rsmax
+
+%% TEMPORARY FOR DATA CONSISTENCY
+%%%%%%%%%%%%%%%%%%%%
+rsval = [64, 96, 128, 256];
+%%%%%%%%%%%%%%%%%%%%
 %% Create binary mask for uCT
 % Downscale data
 % uct_im_nt = downscale3D(uct_im_fr, size(mri_im_3D)); % 'not transformed' uCT image
@@ -182,7 +208,7 @@ for f1 = 1:F
     fprintf('\n--------------------------- Phase %i ---------------------------\n', f1)
 
     % Resize (if applicable)
-    if f1 < F
+    if size(mri_m_fs,1) ~= rsval(f1)
         mri_m_test = Norm01(sum(imresize3(mri_m_fs, [rsval(f1) rsval(f1) size(mri_m_fs,3)]),3));
         uct_testin = Norm01(imresize3(uct_test, [rsval(f1) rsval(f1) rsval(f1)]));
     else
@@ -427,13 +453,6 @@ uct_i_tmp = Norm01(sum(uct_i_FN, 3));
 mri_m_tmp = Norm01(sum(mri_m_fs, 3));
 mri_i_tmp = Norm01(sum(mri_i_fs, 3));
 
-toc
-
-fprintf('\nFinal orientation: (%i, %i, %i)\nFinal slice offset: %i\nFinal pixel offset: %i\n', RT_rs(1,MT_bi), RT_rs(2,MT_bi), RT_rs(3,MT_bi), SLC_b, PIX_b);
-data = table(sum(FR), size(RT,2), size(RT_rs,2));
-data.Properties.VariableNames = {'Full Resolution Evaluations', 'Base Rotations', 'Resliced Rotations'};
-disp(data)
-
 data = table(RT.', MT, FR, 'RowNames', string([1:length(MT)].')); %#ok<NBRAK1>
 data.Properties.VariableNames = {'Rotation', 'Metrics', 'FReval'};
 
@@ -473,7 +492,7 @@ title(fig5, "Mask Slices, poff = "+num2str(PIX_b)+", soff = "+num2str(SLC_b))
 
 clear rt
 
-%%
+% Output final metrics
 dce2D = dicecustom(uct_i_tmp, uct_m_tmp>0, mri_i_tmp, mri_m_tmp>0, 2);
 dce3D = dicecustom(uct_i_FNrs, uct_m_FNrs, mri_i_fs, mri_m_fs, 3);
 iou2D = ioucustom(uct_i_tmp, uct_m_tmp>0, mri_i_tmp, mri_m_tmp>0, 2);
@@ -481,9 +500,15 @@ iou3D = ioucustom(uct_i_FNrs, uct_m_FNrs, mri_i_fs, mri_m_fs, 3);
 rmse2D = -1*irmsecustom(uct_i_tmp, uct_m_tmp>0, mri_i_tmp, mri_m_tmp>0, 2);
 rmse3D = -1*irmsecustom(uct_i_FNrs, uct_m_FNrs, mri_i_fs, mri_m_fs, 3);
 
-data = table(string(tissue), RT_rs(:,MT_bi).', SLC_b, PIX_b, dce2D, dce3D, iou2D, iou3D, rmse2D, rmse3D);
-data.Properties.VariableNames = {'Tissue', 'Rotation', 'Slice Offset', 'Pixel Offset', 'DSE 2D', 'DSE 3D', 'IoU 2D', 'IoU 3D', 'RMSE 2D', 'RMSE 3D'};
-disp(data)
+run_metrics = table(sum(FR), size(RT,2), size(RT_rs,2));
+run_metrics.Properties.VariableNames = {'Full Resolution Evaluations', 'Base Rotations', 'Resliced Rotations'};
+disp(run_metrics)
+
+final_metrics = table(string(tissue), RT_rs(:,MT_bi).', SLC_b, PIX_b, dce2D, dce3D, iou2D, iou3D, rmse2D, rmse3D);
+final_metrics.Properties.VariableNames = {'Tissue', 'Rotation', 'Slice Offset', 'Pixel Offset', 'DSE 2D', 'DSE 3D', 'IoU 2D', 'IoU 3D', 'RMSE 2D', 'RMSE 3D'};
+disp(final_metrics)
+
+toc
 
 % %%
 % [optimizer, metric] = imregconfig("multimodal");
@@ -500,12 +525,20 @@ disp(data)
 
 % Centers 2D & 3D data
 function [diff, imcs, varargout] = CentShift(im, m)
+% Inputs
+%       im: image
+%        m: mask
+% Outputs
+%     diff: shift amount
+%     imcs: centered image
+%      mcs: shifted mask
+
 % Check for no mask input
 if nargin == 1
    m = im;
-   opcheck = false;
+   flagM = false;
 else
-    opcheck = true;
+    flagM = true;
 end
 
 % Find center of ROI
@@ -535,23 +568,31 @@ end
 mcs = circshift(m, diff); imcs = circshift(im, diff);
 
 % Check if we need to output mask as well
-if opcheck
+if flagM
     varargout{1} = mcs;
 end
 end
 
 % Normalize input data to range of 0-1
 function X = Norm01(x)
+% Inputs
+%        x: un-normalized data
+% Outputs
+%        X: normalized data
+
 X = (x - min(x,[],'all'))./(max(x,[],'all') - min(x,[],'all'));
 end
 
 % Generate binary mask
 function m = GenMask(img, th)
+% Inputs
+%      img: image
+%       th: binary threshold
+% Outputs
+%        m: mask
+
 % Create basic mask
 m = img > th;
-
-% Apply to uCT image
-img = img.*m;
 
 % Identify each connected region in image
 CC = bwconncomp(m);
@@ -567,8 +608,15 @@ m(CC.PixelIdxList{idx}) = true;
 m = imfill(m, 6, "holes");
 end
 
-% Trim image down to specified size. Buff is either equal padding on all axis, or dimension size that roi should be padded to
+% Trim image down to specified size
 function [T, roi] = ROITrim(ut, buff)
+% Inputs
+%       ut: un-trimmed image data
+%     buff: either equal padding on all axis, or dimension size that roi should be padded to
+% Outputs
+%        T: shift amount
+%      roi: trimmed image data
+
 % Reset ROI range
 roi = [1, size(ut,1); 1, size(ut,2); 1, size(ut,3)];
 
@@ -697,6 +745,13 @@ end
 
 % Generate angle matrix from input ranges 
 function R = GenAngles(r, a, ar)
+% Inputs
+%       r: initial rotation
+%       a: rotation range resolution
+%      ar: rotation range
+% Outputs
+%       R: rotations
+
 rx = (r(1)-ar/2):a:(r(1)+ar/2);
 ry = (r(2)-ar/2):a:(r(2)+ar/2);
 rz = (r(3)-ar/2):a:(r(3)+ar/2);
@@ -708,6 +763,11 @@ end
 
 % Remove angles that would produce duplicate rotational matrices
 function Rcorr = DupAngleRmv(R)
+% Inputs
+%        R: rotation matrix
+% Outputs
+%    Rcorr: corrected rotation matrix
+
 % First, correct for 0s, negatives & >360 values
 R(R<1) = R(R<1) + 360;
 R(R>360) = R(R>360) - 360;
@@ -752,31 +812,38 @@ Rcorr = Rcorr(:,1:I);
 end
 
 % Remove extrema that are too close
-function MT_bi = CloseExtrRmv(MT_bi, RT, qth)
+function bi = CloseExtrRmv(bi, RT, th)
+% Inputs
+%       bi: best indices
+%       RT: entire rotation matrix
+%       th: threshold
+% Outputs
+%        bi: best indices, with close rotations removed
+
 % Initialize increment
 i1 = 1;
 
 % Begin evaluation
-while i1 < length(MT_bi)
+while i1 < length(bi)
     % Initialize first quaternion
-    q1 = quaternion(RT(:,MT_bi(i1)).', 'eulerd', 'XYZ', 'point');
+    q1 = quaternion(RT(:,bi(i1)).', 'eulerd', 'XYZ', 'point');
 
     % Compare distance from other extrema
-    for i2 = (i1+1):length(MT_bi)
+    for i2 = (i1+1):length(bi)
         % Initialize second quaternion
-        q2 = quaternion(RT(:,MT_bi(i2)).', 'eulerd', 'XYZ', 'point');
+        q2 = quaternion(RT(:,bi(i2)).', 'eulerd', 'XYZ', 'point');
 
         % Calculate distance
         qdist = dist(q1, q2)*180/pi;
 
         % Replace with NaN if distance is less than threshold
-        if qdist < qth
-            MT_bi(i2) = NaN;
+        if qdist < th
+            bi(i2) = NaN;
         end
     end
 
     % Remove close extrema
-    MT_bi = rmmissing(MT_bi);
+    bi = rmmissing(bi);
 
     % Shift increment
     i1 = i1 + 1;
@@ -784,10 +851,18 @@ end
 end
 
 % Determine best result
-function MT_bi = IsolateBest(met, RT, nume, numE)
+function MT_bi = IsolateBest(MT, RT, nume, numE)
+% Inputs
+%       MT: metrixs
+%       RT: rotations
+%     nume: original number of local extrema
+%     numE: final number of local extrema
+% Outputs
+%       bi: indices corresponding to the best metrics
+
 % Find best (rotations which have highest DICE & RMSE)
-[~, MT_bi1] = maxk(met(:,1), nume);
-[~, MT_bi2] = maxk(met(:,2), nume);
+[~, MT_bi1] = maxk(MT(:,1), nume);
+[~, MT_bi2] = maxk(MT(:,2), nume);
 
 % Isolate common rotations between the two arrays
 MT_bi = intersect(MT_bi1, MT_bi2, 'stable');
@@ -823,14 +898,23 @@ end
 end
 
 % Transform image & convert to 2D mask
-function MSK = Trans2Mask(img, R, Rin, method, th, B)
+function MSK = Trans2Mask(img, R, Rin, method, th, idx)
+% Inputs
+%      img: image data
+%        R: rotation(s)
+%      Rin: spatial referencing information
+%   method: interpolation method
+%       th: mask threshold
+%      idx: *optional* exact indices from rotation matrix to use
+% Outputs
+%      MSK: warped mask
 
 % Clarify # iterations & iterator, based off input
 switch nargin
     case 5
         inum = size(R,2); I = 1:inum;
     case 6
-        inum = size(B,1); I = B;
+        inum = size(idx,1); I = idx;
     otherwise
         error('Incorrect number of input arguments.')
 end
@@ -867,6 +951,14 @@ end
 
 % Apply high resolution rotation to image data
 function [IMG, MSK] = RotateData(img, R, Rin, th)
+% Inputs
+%      img: image data
+%        R: rotation(s)
+%      Rin: spatial referencing information
+%       th: mask threshold
+% Outputs
+%      IMG: warped image
+%      MSK: warped mask
 
 % Create affine transform
 tform = rigidtform3d(squeeze(R.'), [0 0 0]);
@@ -886,9 +978,21 @@ MSK = GenMask(IMG, th);
 end
 
 % Reslice uCT data to match MRI slices
-function [i_CT, m_CT, varargout] = Reslice(i_ct, m_ct, r, inp4, inp5)
+function [IMG, MSK, varargout] = Reslice(img, msk, r, inp4, inp5)
+% Inputs
+%      img: warped image data
+%      msk: warped mask data
+%        r: ratio of slice resolution between reference & test data
+%     inp4: either pixel offset (prior data), or reference image data
+%     inp5: either slice offset (prior data), or reference mask data
+% Outputs
+%      IMG: warped, resliced image
+%      MSK: warped, resliced mask
+%     Bpix: *optional* best pixel offset
+%     Bslc: *optional* best slice offset
+
 % Determine indices of start/stop for mri slices in ct
-ibase = 0:r:size(i_ct,3); % base starts & stops
+ibase = 0:r:size(img,3); % base starts & stops
 ifull(1,:) = ceil(ibase(1:end-1))+1; % first full slices
 ifull(2,:) = floor(ibase(2:end)); % last full slices
 
@@ -905,16 +1009,16 @@ if size(inp4, 1) == 1
     lastslice = inp5;
 
     % Reslice data
-    i_CT = SliceCombine(i_ct, ifull+Bpix, ipart);
-    m_CT = SliceCombine(m_ct, ifull+Bpix, ipart);
-    i_CT = i_CT(:,:,firstslice:lastslice);
-    m_CT = m_CT(:,:,firstslice:lastslice);
+    IMG = SliceCombine(img, ifull+Bpix, ipart);
+    MSK = SliceCombine(msk, ifull+Bpix, ipart);
+    IMG = IMG(:,:,firstslice:lastslice);
+    MSK = MSK(:,:,firstslice:lastslice);
 else
-    i_mri = inp4; m_mri = inp5;
+    img_ref = inp4; msk_ref = inp5;
 
     % Determine size difference of data
-    slcdiff = size(ifull,2)-size(i_mri,3);
-    pixdiff = size(i_ct,3)-ifull(2,end);
+    slcdiff = size(ifull,2)-size(img_ref,3);
+    pixdiff = size(img,3)-ifull(2,end);
 
     % Preallocate data
     MTpix = zeros(pixdiff+1, 2);
@@ -924,8 +1028,8 @@ else
     % is excluded, since partial pixel addition would extend past matrix bounds.
     for pixofs = 0:pixdiff
         % fprintf('\nTesting a subslice offset of %i pixel(s).\n', pix)
-        i_CT = SliceCombine(i_ct, ifull+pixofs, ipart);
-        m_CT = SliceCombine(m_ct, ifull+pixofs, ipart);
+        IMG = SliceCombine(img, ifull+pixofs, ipart);
+        MSK = SliceCombine(msk, ifull+pixofs, ipart);
 
         % For extra slices in CT data, determine offset with MRI
         % Preallocate data
@@ -933,46 +1037,21 @@ else
         for slcofs = 0:slcdiff
 
             % Isolate current number of slices
-            i_CT_ofs = i_CT(:,:,1+slcofs:end-slcdiff+slcofs);
-            m_CT_ofs = m_CT(:,:,1+slcofs:end-slcdiff+slcofs);
+            i_CT_ofs = IMG(:,:,1+slcofs:end-slcdiff+slcofs);
+            m_CT_ofs = MSK(:,:,1+slcofs:end-slcdiff+slcofs);
 
-            MTslc(1+slcofs,:) = custommetrics(i_CT_ofs, m_CT_ofs, i_mri, m_mri, 3);
+            MTslc(1+slcofs,:) = custommetrics(i_CT_ofs, m_CT_ofs, img_ref, msk_ref, 3);
         end
-
-        % Mostly vectorized version of above code. It is less efficient.
-        % % For extra slices in CT data, determine offset with MRI
-        % % Preallocate data
-        % met_ofs = zeros(size(i_CT,3)-size(mri,3)+1,size(i_CT,3)-size(mri,3));
-        % CT_ofs = zeros(size(i_CT,1), size(i_CT,2), size(mri,3), size(i_CT,3)-size(mri,3));
-        % for slc = 0:size(i_CT,3)-size(mri,3)
-        %     % Isolate current number of slices
-        %     CT_ofs(:,:,:,slc+1) = i_CT(:,:,1+slc:end-(size(i_CT,3)-size(mri,3))+slc);
-        % end
-        %
-        % % RMSE
-        % RMSE = sqrt(squeeze(sum((mri - CT_ofs).^2,[1 2]))./(size(CT_ofs,1)*size(CT_ofs,2)));
-        %
-        % % dice parameters
-        % CTm = CT_ofs > 0;
-        % area_i = squeeze(sum(CTm.*m_mri, [1 2]));
-        % area_t = (squeeze(sum(CTm, [1 2])) + squeeze(sum(m_mri, [1 2])));
-        %
-        % % dice
-        % dsc = 2.*area_i./area_t;
-        %
-        % met_ofs = mean(dsc - RMSE);
 
         % Find best
         Bslc(1+pixofs) = IsolateBestRS(MTslc)-1;
 
         % Isolate best from the rest
-        i_CT = i_CT(:,:,1+Bslc(1+pixofs):end-slcdiff+Bslc(1+pixofs));
-        m_CT = m_CT(:,:,1+Bslc(1+pixofs):end-slcdiff+Bslc(1+pixofs));
-
-        % fprintf('For a %i pixel subslice offset, a %i slice offset was best.\n', pix, Bslc(1+pix))
+        IMG = IMG(:,:,1+Bslc(1+pixofs):end-slcdiff+Bslc(1+pixofs));
+        MSK = MSK(:,:,1+Bslc(1+pixofs):end-slcdiff+Bslc(1+pixofs));
 
         % Evaluate
-        MTpix(1+pixofs,:) = custommetrics(i_CT, m_CT, i_mri, m_mri, 3);
+        MTpix(1+pixofs,:) = custommetrics(IMG, MSK, img_ref, msk_ref, 3);
     end
 
     % Find best
@@ -983,15 +1062,11 @@ else
 
     % Isolate correct slice & pixel values by adding the best offsets
     firstslice = 1 + Bslc;
-    lastslice = size(i_mri,3) + Bslc;
-    % firstpixel = ifull(1,firstslice) + Bpix;
-    % lastpixel = ifull(2,lastslice) + Bpix;
-    % fprintf('\nOverall best results obtained with offsets of %i pixel(s) and %i slice(s).\n', Bpix, Bslc)
-    % fprintf('This includes slices %i to %i and pixels %i to %i, plus %.4f and %.4f of pixels %i and %i, respectively.\n', firstslice, lastslice, firstpixel, lastpixel, ipart(1,firstslice), ipart(2,lastslice), firstpixel-1, lastpixel+1)
-    i_CT = SliceCombine(i_ct, ifull+Bpix, ipart);
-    m_CT = SliceCombine(m_ct, ifull+Bpix, ipart);
-    i_CT = i_CT(:,:,firstslice:lastslice);
-    m_CT = m_CT(:,:,firstslice:lastslice);
+    lastslice = size(img_ref,3) + Bslc;
+    IMG = SliceCombine(img, ifull+Bpix, ipart);
+    MSK = SliceCombine(msk, ifull+Bpix, ipart);
+    IMG = IMG(:,:,firstslice:lastslice);
+    MSK = MSK(:,:,firstslice:lastslice);
 
     % Set necessary variables as outputs
     varargout{1} = Bpix;
@@ -1066,6 +1141,12 @@ end
 
 % Calculate mutual information index for given slice set
 function I = MII(A, B)
+% Inputs
+%        A: dataset 1
+%        B: dataset 2
+% Outputs
+%        I: mutual information index
+
 % Preallocate data
 I = zeros(1,size(A,3));
 
