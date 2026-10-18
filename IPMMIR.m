@@ -325,7 +325,7 @@ f2 = 1; % index
 w = 1; % while loop index
 
 % Calculate metric for resliced data of current rotation
-[uct_i_testout, uct_m_testout] = RotateData(uct_testin, RT_rs, rin, 'cubic', thresh, 'full');
+[uct_i_testout, uct_m_testout] = RotateData(uct_testin, RT_rs, rin, thresh);
 [uct_i_testout, uct_m_testout, ~, ~] = CT_reslicer_v2(uct_i_testout, uct_m_testout, mri_i_test, mri_m_test, resdiff);
 MT_rs = custommetrics(uct_i_testout, uct_m_testout, mri_i_test, mri_m_test, 3);
 
@@ -361,7 +361,7 @@ while any(RT_b ~= RT_rs(:,MT_bi)) && (w < W)
         f2 = f2 + 1;
 
         % Transform image & create mask
-        [uct_i_testout, uct_m_testout] = RotateData(uct_testin, RT_new(:,f1), rin, 'cubic', thresh, 'full');
+        [uct_i_testout, uct_m_testout] = RotateData(uct_testin, RT_new(:,f1), rin, thresh);
 
         % Reslice microCT data
         [uct_i_testout, uct_m_testout, ~, ~] = CT_reslicer_v2(uct_i_testout, uct_m_testout, mri_i_test, mri_m_test, resdiff);
@@ -384,10 +384,10 @@ end
 
 %% Show best FOV
 % For display
-tform = affinetform3d(rigidtform3d(squeeze(RT_rs(:,MT_bi).'), [0 0 0]));
+tform = rigidtform3d(squeeze(RT_rs(:,MT_bi).'), [0 0 0]);
 
 % Create MRI & uCT images for display
-[uct_i_FNum, uct_m_FN] = RotateData(uct_i_fsum, RT_rs(:,MT_bi), rin, 'cubic', thresh, 'full');
+[uct_i_FNum, uct_m_FN] = RotateData(uct_i_fsum, RT_rs(:,MT_bi), rin, thresh);
 uct_i_FN = uct_i_FNum.*uct_m_FN;
 [uct_i_FNrs, uct_m_FNrs, PIX_b, SLC_b] = CT_reslicer_v2(uct_i_FN, uct_m_FN, mri_i_fs, mri_m_fs, resdiff);
 uct_m_tmp = Norm01(sum(uct_m_FN, 3));
@@ -450,10 +450,6 @@ end
 hold on; legend([scatter([],[],10,[0 1 0],'filled') scatter([],[],10,[1 0 1],'filled')],{'MRI','uCT'}); hold off;
 title(fig4, "Image Slices, poff = "+num2str(PIX_b)+", soff = "+num2str(SLC_b))
 
-plotmygraph(mri_m_fs, 'MRI Masks'); 
-
-plotmygraph(uct_m_FNrs, 'microCT Masks')
-
 figure('Name', 'finalm', 'NumberTitle', 'off'); fig5 = tiledlayout('flow', 'TileSpacing', 'compact', 'Padding', 'compact');
 for f1 = 1:size(mri_m_fs,3)
     nexttile
@@ -465,12 +461,24 @@ title(fig5, "Mask Slices, poff = "+num2str(PIX_b)+", soff = "+num2str(SLC_b))
 clear rt
 
 %%
-fprintf(['\n\ndice 2D: ', num2str(dicecustom(uct_i_tmp, uct_m_tmp>0, mri_i_tmp, mri_m_tmp>0, 2))])
-fprintf(['\ndice 3D: ',num2str(dicecustom(uct_i_FNrs, uct_m_FNrs, mri_i_fs, mri_m_fs, 3))])
-fprintf(['\n IoU 2D: ',num2str(ioucustom(uct_i_tmp, uct_m_tmp>0, mri_i_tmp, mri_m_tmp>0, 2))])
-fprintf(['\n IoU 3D: ',num2str(ioucustom(uct_i_FNrs, uct_m_FNrs, mri_i_fs, mri_m_fs, 3))])
-fprintf(['\nRMSE 2D: ',num2str(-1*irmsecustom(uct_i_tmp, uct_m_tmp>0, mri_i_tmp, mri_m_tmp>0, 2))])
-fprintf(['\nRMSE 3D: ',num2str(-1*irmsecustom(uct_i_FNrs, uct_m_FNrs, mri_i_fs, mri_m_fs, 3)), '\n'])
+dce2D = dicecustom(uct_i_tmp, uct_m_tmp>0, mri_i_tmp, mri_m_tmp>0, 2);
+dce3D = dicecustom(uct_i_FNrs, uct_m_FNrs, mri_i_fs, mri_m_fs, 3);
+iou2D = ioucustom(uct_i_tmp, uct_m_tmp>0, mri_i_tmp, mri_m_tmp>0, 2);
+iou3D = ioucustom(uct_i_FNrs, uct_m_FNrs, mri_i_fs, mri_m_fs, 3);
+rmse2D = -1*irmsecustom(uct_i_tmp, uct_m_tmp>0, mri_i_tmp, mri_m_tmp>0, 2);
+rmse3D = -1*irmsecustom(uct_i_FNrs, uct_m_FNrs, mri_i_fs, mri_m_fs, 3);
+
+data = table(string(tissue), RT_rs(:,MT_bi).', SLC_b, PIX_b, dce2D, dce3D, iou2D, iou3D, rmse2D, rmse3D);
+data.Properties.VariableNames = {'Tissue', 'Rotation', 'Slice Offset', 'Pixel Offset', 'DSE 2D', 'DSE 3D', 'IoU 2D', 'IoU 3D', 'RMSE 2D', 'RMSE 3D'};
+disp(data)
+%%
+[optimizer, metric] = imregconfig("multimodal");
+uct_i_FNrs_registered = imregister(uct_i_FNrs(:,:,4), mri_i_fs(:,:,4), 'rigid', optimizer, metric);
+tform = imregtform(uct_i_FNrs(:,:,4), mri_i_fs(:,:,4), 'rigid', optimizer, metric);
+
+figure; imagesc(imfuse(uct_i_FNrs(:,:,4), uct_i_FNrs_registered)); axis square; axis off; title('Registration'); hold on; legend([scatter([],[],10,[0 1 0],'filled') scatter([],[],10,[1 0 1],'filled')],{'unreg','reg'}); hold off;
+figure; imagesc(imfuse(mri_i_fs(:,:,4), uct_i_FNrs(:,:,4))); axis square; axis off; title('Registration'); hold on; legend([scatter([],[],10,[0 1 0],'filled') scatter([],[],10,[1 0 1],'filled')],{'MRI','unreg'}); hold off;
+figure; imagesc(imfuse(mri_i_fs(:,:,4), uct_i_FNrs_registered)); axis square; axis off; title('Registration'); hold on; legend([scatter([],[],10,[0 1 0],'filled') scatter([],[],10,[1 0 1],'filled')],{'MRI','reg'}); hold off;
 
 %% Functions
 
@@ -761,15 +769,15 @@ end
 Rcorr = Rcorr(:,1:I);
 end
 
-% Apply rotation to image data
-function [IMG, MSK] = RotateData(img, R, Rin, method, th, mtype)
+% Apply high resolution rotation to image data
+function [IMG, MSK] = RotateData(img, R, Rin, th)
 
 % Create affine transform
-tform = affinetform3d(rigidtform3d(squeeze(R.'), [0 0 0]));
+tform = rigidtform3d(squeeze(R.'), [0 0 0]);
 
 % Transform image
 % IMG = imwarpcustom(i_test, Rin, tform, ipmethod, affineOutputView(size(i_test), tform, "BoundsStyle","CenterOutput"));
-IMG = imwarp(img, Rin, tform, method, "OutputView", affineOutputView(size(img), tform, "BoundsStyle", "CenterOutput"));
+IMG = imwarp(img, Rin, tform, 'cubic', "OutputView", affineOutputView(size(img), tform, "BoundsStyle", "CenterOutput"));
 
 % Trim to correct size (if applicable)
 if any(size(IMG) ~= size(img)); IMG = ROITrim(IMG, size(img)); end
@@ -778,11 +786,7 @@ if any(size(IMG) ~= size(img)); IMG = ROITrim(IMG, size(img)); end
 IMG = Norm01(IMG);
 
 % Create mask
-if strcmp(mtype, 'basic')
-    MSK = IMG > th;
-elseif strcmp(mtype, 'full')
-    MSK = GenMask(IMG, th);
-end
+MSK = GenMask(IMG, th);
 end
 
 % Transform image & convert to 2D mask
@@ -801,23 +805,27 @@ end
 % Preallocate data
 dout = zeros(size(din,1), size(din,2), inum, 'like', din);
 
-% Select mask generation type
-if strcmp(method, 'cubic')
-    mtype = 'full';
-else
-    mtype = 'basic';
-end
-
 for i = 1:inum
 
+    % Create affine transform
+    tform = rigidtform3d(squeeze(R(:,I(i)).'), [0 0 0]);
+
     % Transform image
-    [~, m_temp] = RotateData(din, R(:,I(i)), Rin, method, th, mtype);
+    % tmp = imwarpcustom(i_test, Rin, tform, ipmethod, affineOutputView(size(i_test), tform, "BoundsStyle","CenterOutput"));
+    tmp = imwarp(din, Rin, tform, method, "OutputView", affineOutputView(size(din), tform, "BoundsStyle", "CenterOutput"));
+
+    % Create mask
+    if ~strcmp(method, 'cubic')
+        tmp = tmp > th;
+    else
+        tmp = GenMask(tmp, th);
+    end
 
     % Convert to 2D
-    m_temp = sum(m_temp, 3);
+    tmp = sum(tmp, 3);
 
     % Add into array
-    dout(:,:,i) = m_temp;
+    dout(:,:,i) = tmp;
 end
 
 % Normalize
