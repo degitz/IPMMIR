@@ -4,7 +4,7 @@
 % fs: full-sized
 % og: original
 %%%
-%%%%%% Uses binary mask for dice, non-binary mask for RMSE
+%%%%%% Uses 2D binary & non-binary masks for translation analysis, 3D masks for slice analysis
 %%%%%% Transforms image & finds mask, then converts mask to 2D. Outputs only mask
 clear; clc; close all;
 
@@ -21,9 +21,20 @@ a =     [  30,  10,   2,   1,   1]; % rotation resolutions & ranges for transfor
 ar =    [ 360,  60,  12,   6,   2];
 numE =  [        5,   4,   3]; % number of local extrema from previous iteration to test
 S = length(a)-1; % number of iterations
+etype = 'Dice';
 
 % Add last index in numE. Just acts as placeholder as we only want 1 output angle
 numE = [numE, 1];
+
+% Select evaluation metric
+switch etype
+    case 'Dice'
+        TransEval = @dicecustom;
+    case 'iRMSE'
+        TransEval = @irmsecustom;
+    case 'IoU'
+        TransEval = @ioucustom;
+end
 
 %%% Load MRI data
 [im_name, m_name, ~, se_offset] = grmdfs(tissue, 'ssems');
@@ -177,13 +188,7 @@ for s = 1:S
         end
 
         % Obtain rotation angles
-        rx = (R(1,Bi_met(m))-ar(s)/2):a(s):(R(1,Bi_met(m))+ar(s)/2);
-        ry = (R(2,Bi_met(m))-ar(s)/2):a(s):(R(2,Bi_met(m))+ar(s)/2);
-        rz = (R(3,Bi_met(m))-ar(s)/2):a(s):(R(3,Bi_met(m))+ar(s)/2);
-        Rx = repmat(rx, 1, length(ry)*length(rz)); Rx = sort(Rx);
-        Ry = repmat(ry, 1, length(rz)); Ry = sort(Ry); Ry = repmat(Ry, 1, length(rx));
-        Rz = repmat(rz, 1, length(rx)*length(ry));
-        Rtest1 = [Rx; Ry; Rz];
+        Rtest1 = GenAngles(R(:,Bi_met(m)), a(s), ar(s));
 
         if m < length(Bi_met)
             for l = 1:(length(Bi_met)-m)
@@ -192,13 +197,7 @@ for s = 1:S
                     continue
                 else
                     % Obtain rotation angles for testing range
-                    rx = (R(1,Bi_met(m+l))-ar(s)/2):a(s):(R(1,Bi_met(m+l))+ar(s)/2);
-                    ry = (R(2,Bi_met(m+l))-ar(s)/2):a(s):(R(2,Bi_met(m+l))+ar(s)/2);
-                    rz = (R(3,Bi_met(m+l))-ar(s)/2):a(s):(R(3,Bi_met(m+l))+ar(s)/2);
-                    Rx = repmat(rx, 1, length(ry)*length(rz)); Rx = sort(Rx);
-                    Ry = repmat(ry, 1, length(rz)); Ry = sort(Ry); Ry = repmat(Ry, 1, length(rx));
-                    Rz = repmat(rz, 1, length(rx)*length(ry));
-                    Rtest2 = [Rx; Ry; Rz];
+                    Rtest2 = GenAngles(R(:,Bi_met(m+l)), a(s), ar(s));
 
                     % Check for intersection point
                     [Int, int1, int2] = intersect(Rtest1.', Rtest2.', 'rows', 'stable');
@@ -207,14 +206,6 @@ for s = 1:S
                         ccheck(m+l) = true;
 
                         % Update ranges (old technique adds significantly more angles to test)
-                        % Rint = union(Rint1.', Rint2.', 'rows', 'stable');
-                        % rx = min(Rint(:,1)):a(s):max(Rint(:,1));
-                        % ry = min(Rint(:,2)):a(s):max(Rint(:,2));
-                        % rz = min(Rint(:,3)):a(s):max(Rint(:,3));
-                        % Rint1x = repmat(rx, 1, length(ry)*length(rz)); Rint1x = sort(Rint1x);
-                        % Rint1y = repmat(ry, 1, length(rz)); Rint1y = sort(Rint1y); Rint1y = repmat(Rint1y, 1, length(rx));
-                        % Rint1z = repmat(rz, 1, length(rx)*length(ry));
-                        % Rint1 = [Rint1x; Rint1y; Rint1z];
                         Rtest1 = union(Rtest1.', Rtest2.', 'rows', 'stable');
                         Rtest1 = Rtest1.';
                     end
@@ -234,9 +225,9 @@ for s = 1:S
         fprintf("      (%i, %i, %i) to (%i, %i, %i)\n", r(1), r(2), r(3), r(4), r(5), r(6))
     end
 
-    % Correct for negative values & 360 values
-    Rnew(Rnew<0) = 360 + Rnew(Rnew<0);
-    Rnew(Rnew==360) = 0;
+    % Correct for negative values & +360 values
+    Rnew(Rnew<0) = Rnew(Rnew<0) + 360;
+    Rnew(Rnew>=360) = Rnew(Rnew>=360) - 360;
 
     % Add to old angles & remove duplicates
     if s == 1
@@ -258,7 +249,7 @@ for s = 1:S
     fr = [fr; false(size(m_test_uct,3), 1)]; %#ok<AGROW>
 
     % Evaluate rotatated FOV
-    [mettemp] = TransEval(m_test_uct, m_test_mri);
+    mettemp = TransEval(m_test_uct, m_test_uct>0, m_test_mri, m_test_mri>0, 2);
     a_met = [a_met; mettemp]; %#ok<AGROW>
 
     % Find best FOV
@@ -273,8 +264,8 @@ for s = 1:S
         fri = intersect(find(fr == false), Bi_met);
 
         data = table(R(:,fri).', a_met(fri), 'RowNames', string(fri));
-        data.Properties.VariableNames = {'Rotation', 'metric'};
-        data = sortrows(data, {'metric'},{'descend'});
+        data.Properties.VariableNames = {'Rotation', etype};
+        data = sortrows(data, {etype},{'descend'});
         disp(data)
 
         % Reset test mri data for re-evaluation
@@ -289,7 +280,7 @@ for s = 1:S
         fr(fri) = true(length(fri), 1);
 
         % Evaluate new data
-        [mettemp] = TransEval(m_test_uct, m_test_mri);
+        mettemp = TransEval(m_test_uct, m_test_uct>0, m_test_mri, m_test_mri>0, 2);
         a_met(fri) = mettemp;
 
         % Find best FOV
@@ -297,13 +288,14 @@ for s = 1:S
     end
 
     data = table(R(:,Bi_met).', a_met(Bi_met), 'RowNames', string(Bi_met));
-    data.Properties.VariableNames = {'Rotation', 'metric'};
+    data.Properties.VariableNames = {'Rotation', etype};
     fprintf('\nMaxima occurred at rotation(s) showed below:\n')
     disp(data)
 
     toc
 end
 
+%% Final Phase
 B_R_old = R(:,Bi_met);
 
 % Reset test mri data for final evaluation
@@ -319,13 +311,7 @@ while any(B_R ~= R(:,Bi_met))
     fprintf('%.4f @ (%i, %i, %i)\n', a_met(Bi_met), B_R(1), B_R(2), B_R(3))
 
     % Obtain rotation angles
-    rx = (R(1,Bi_met)-ar(end)/2):a(end):(R(1,Bi_met)+ar(end)/2);
-    ry = (R(2,Bi_met)-ar(end)/2):a(end):(R(2,Bi_met)+ar(end)/2);
-    rz = (R(3,Bi_met)-ar(end)/2):a(end):(R(3,Bi_met)+ar(end)/2);
-    Rx = repmat(rx, 1, length(ry)*length(rz)); Rx = sort(Rx);
-    Ry = repmat(ry, 1, length(rz)); Ry = sort(Ry); Ry = repmat(Ry, 1, length(rx));
-    Rz = repmat(rz, 1, length(rx)*length(ry));
-    Rint = [Rx; Ry; Rz];
+    Rint = GenAngles(R(:,Bi_met), a(end), ar(end));
 
     % Correct for negative values & 360 values
     Rint(Rint<0) = 360 + Rint(Rint<0);
@@ -334,34 +320,37 @@ while any(B_R ~= R(:,Bi_met))
     % First, identify new angles
     Rnew = Rint; Rold = R;
     R = DupAngleRmv(horzcat(R, Rnew));
-    Rnew1 = R(:, (size(Rold,2)+1):end);
+    Rnew1 = R(:, (size(Rold,2)+1):end); % new angles
 
     % Next, identify angles that need to be retested
     [~,Rinti,~] = intersect(R.', Rint.', 'rows'); Rinti = Rinti.';
     fri = find(fr == false);
     Rnewi = intersect(Rinti, fri);
-    Rnew2 = R(:,Rnewi);
+    Rnew2 = R(:,Rnewi); % angles needing to be retested
 
+    % Test new angles
     if ~isempty(Rnew1)
         % Transform uCT data
         [m_test_uct] = Trans2Mask(i_fs_uct, Rnew1, Rin, 'cubic', thresh);
 
-        % Update full-resolution check (log to see whether the angle has been evaluated at-full resolution)
+        % Update full-resolution check
         fr = [fr; true(size(m_test_uct,3), 1)]; %#ok<AGROW>
 
         % Evaluate rotatated FOV
-        [mettemp] = TransEval(m_test_uct, m_test_mri); a_met = [a_met; mettemp]; %#ok<AGROW>
+        [mettemp] = TransEval(m_test_uct, m_test_uct>0, m_test_mri, m_test_mri>0, 2);
+        a_met = [a_met; mettemp]; %#ok<AGROW>
     end
 
+    % Retest existing angles
     if ~isempty(Rnew2)
         % Transform uCT data
         [m_test_uct] = Trans2Mask(i_fs_uct, Rnew2, Rin, 'cubic', thresh);
     
-        % Update full-resolution check (log to see whether the angle has been evaluated at-full resolution)
+        % Update full-resolution check
         fr(Rnewi) = true(size(m_test_uct,3), 1); %#ok<SAGROW>
     
         % Evaluate rotatated FOV
-        [mettemp, dsc, RMSE] = TransEval(m_test_uct, m_test_mri); 
+        [mettemp] = TransEval(m_test_uct, m_test_uct>0, m_test_mri, m_test_mri>0, 2);
         a_met(Rnewi) = mettemp; %#ok<SAGROW>
     end
 
@@ -390,7 +379,7 @@ m_disp_mri = Norm01(sum(m_fs_mri, 3));
 i_disp_mri = Norm01(sum(i_fs_mri, 3));
 
 data = table(R.', a_met, fr, 'RowNames', string([1:length(a_met)].')); %#ok<NBRAK1>
-data.Properties.VariableNames = {'Rotation', 'metric', 'FReval'};
+data.Properties.VariableNames = {'Rotation', etype, 'FReval'};
 
 % take data off gpu for non-linear interpolation
 if ~strcmp(ipmethod,'linear') && isgpuarray(i_fs_uct)
@@ -426,6 +415,9 @@ imagesc(imfuse(i_disp_mri, i_disp_uct)); axis square; axis off; title('Image Ove
 title(f3, '2D Images')
 
 %% Reslicing
+fprintf('\n--------------------------- Phase %i ---------------------------\n', s+2)
+fprintf('Pooling microCT slices into groups that correspond to MRI slices.\n')
+
 % Reslice microCT data
 [i_finaltrue_uct, m_finaltrue_uct, Bpix, Bofs] = CT_reslicer(i_final_uct, m_final_uct, i_fs_mri, m_fs_mri, 1/res, 'Dice');
 
@@ -433,7 +425,7 @@ plotmygraph(i_fs_mri, 'MRI Images'); plotmygraph(i_finaltrue_uct, 'microCT Image
 figure('Name', 'finali', 'NumberTitle', 'off'); f4 = tiledlayout('flow', 'TileSpacing', 'compact', 'Padding', 'compact');
 for i = 1:size(i_fs_mri,3)
     nexttile
-    imagesc(imfuse(i_fs_mri(:,:,i), i_finaltrue_uct(:,:,i))); axis square; axis off; title(num2str(i));
+    imagesc(imfuse(i_fs_mri(:,:,i), i_finaltrue_uct(:,:,i))); axis square; axis off; title("dice = "+num2str(a_met(i)));
 end
 hold on; legend([scatter([],[],10,[0 1 0],'filled') scatter([],[],10,[1 0 1],'filled')],{'MRI','uCT'}); hold off;
 title(f4, 'Image Slices')
@@ -442,7 +434,7 @@ plotmygraph(m_fs_mri, 'MRI Masks'); plotmygraph(m_finaltrue_uct, 'microCT Masks'
 figure('Name', 'finalm', 'NumberTitle', 'off'); f5 = tiledlayout('flow', 'TileSpacing', 'compact', 'Padding', 'compact');
 for i = 1:size(m_fs_mri,3)
     nexttile
-    imagesc(imfuse(m_fs_mri(:,:,i), m_finaltrue_uct(:,:,i))); axis square; axis off; title(num2str(i));
+    imagesc(imfuse(m_fs_mri(:,:,i), m_finaltrue_uct(:,:,i))); axis square; axis off; title("dice = "+num2str(a_met(i)));
 end
 hold on; legend([scatter([],[],10,[0 1 0],'filled') scatter([],[],10,[1 0 1],'filled')],{'MRI','uCT'}); hold off;
 title(f5, 'Mask Slices')
@@ -452,85 +444,7 @@ fprintf(['\n\nslice offset: ', num2str(Bofs)])
 fprintf(['\npixel offset: ', num2str(Bpix)])
 fprintf(['\ndice 2D: ', num2str(dicecustom(i_disp_uct, m_disp_uct>0, i_disp_mri, m_disp_mri>0, 2))])
 fprintf(['\nRMSE 2D: ',num2str(-1*irmsecustom(i_disp_uct, m_disp_uct>0, i_disp_mri, m_disp_mri>0, 2)), '\n'])
-
 %% Functions
-% % Assuming both inputs are same FOV, decreases resolution of first image to match that of second image
-% function img_newres = Downscale3D(img_oldres, imsize)
-% dimlen = size(img_oldres); % find image size
-% 
-% % Check if input is square
-% if min(dimlen) ~= max(dimlen)
-% 
-%     % Find size difference
-%     diff = max(dimlen) - min(dimlen); diff1 = floor(diff/2);
-% 
-%     % Check if difference is odd (if so, remove extra from one side)
-%     extra = rem(diff, 2);
-% 
-%     % Trim FOV
-%     [~, Mdim] = max(dimlen);
-%     if Mdim == 1
-%         if dimlen(2) == dimlen(1)
-%             img_oldres = img_oldres(1+diff1:dimlen-diff1-extra, 1+diff1:dimlen-diff1-extra, :);
-%         elseif dimlen(3) == dimlen(1)
-%             img_oldres = img_oldres(1+diff1:dimlen-diff1-extra, :, 1+diff1:dimlen-diff1-extra);
-%         else
-%             img_oldres = img_oldres(1+diff1:dimlen-diff1-extra, :, :);
-%         end
-%     elseif Mdim == 2
-%         if dimlen(1) == dimlen(2)
-%             img_oldres = img_oldres(1+diff1:dimlen-diff1-extra, 1+diff1:dimlen-diff1-extra, :);
-%         elseif dimlen(3) == dimlen(2)
-%             img_oldres = img_oldres(:, 1+diff1:dimlen-diff1-extra, 1+diff1:dimlen-diff1-extra);
-%         else
-%             img_oldres = img_oldres(:, 1+diff1:dimlen-diff1-extra, :);
-%         end
-%     else % Mdim ==
-%         if dimlen(1) == dimlen(3)
-%             img_oldres = img_oldres(1+diff1:dimlen-diff1-extra, :, 1+diff1:dimlen-diff1-extra);
-%         elseif dimlen(2) == dimlen(3)
-%             img_oldres = img_oldres(:, 1+diff1:dimlen-diff1-extra, 1+diff1:dimlen-diff1-extra);
-%         else
-%             img_oldres = img_oldres(:, :, 1+diff1:dimlen-diff1-extra);
-%         end
-%     end
-% end
-% 
-% dimlen = size(img_oldres,1); % find image size
-% 
-% kspace = ifftshift(fftn(ifftshift(img_oldres))); % kspace of og data
-% 
-% % Find size difference
-% diff = size(img_oldres, 1) - imsize(1); diff1 = floor(diff/2);
-% 
-% % Check if difference is odd (if so, remove extra from one side)
-% extra = rem(diff, 2);
-% 
-% % Decrease resolution
-% kspace = kspace(1+diff1:dimlen-diff1-extra, 1+diff1:dimlen-diff1-extra, 1+diff1:dimlen-diff1-extra);
-% 
-% % Convert from FD
-% img_newres = abs(fftshift(ifftn(fftshift(kspace))));
-% end
-% 
-% % Assuming both inputs are same FOV, decreases resolution of first image to match that of second image
-% function img_newres = Downscale2D(img_oldres, imsize)
-% dimlen = size(img_oldres,1); % find image size
-% 
-% kspace = ifftshift(fftn(ifftshift(img_oldres))); % kspace of og data
-% 
-% % Find size difference
-% diff = size(img_oldres, 1) - imsize(1); diff1 = floor(diff/2);
-% 
-% % Check if difference is odd (if so, remove extra from one side)
-% extra = rem(diff, 2);
-% 
-% % Decrease resolution
-% kspace = kspace(1+diff1:dimlen-diff1-extra, 1+diff1:dimlen-diff1-extra, :);
-% 
-% % Convert from FD
-% img_newres = abs(fftshift(ifftn(fftshift(kspace))));
-% end
 
 % Centers 2D & 3D data
 function [diff, imcs, varargout] = CentShift(im, m)
@@ -707,6 +621,17 @@ end
 T = ut(roi(1,1):roi(1,2), roi(2,1):roi(2,2), roi(3,1):roi(3,2));
 end
 
+% Generate angle matrix from input ranges 
+function R = GenAngles(r, a, ar)
+rx = (r(1)-ar/2):a:(r(1)+ar/2);
+ry = (r(2)-ar/2):a:(r(2)+ar/2);
+rz = (r(3)-ar/2):a:(r(3)+ar/2);
+Rx = repmat(rx, 1, length(ry)*length(rz)); Rx = sort(Rx);
+Ry = repmat(ry, 1, length(rz)); Ry = sort(Ry); Ry = repmat(Ry, 1, length(rx));
+Rz = repmat(rz, 1, length(rx)*length(ry));
+R = [Rx; Ry; Rz];
+end
+
 % Remove angles that would produce duplicate rotational matrices
 function Rcorr = DupAngleRmv(R)
 Rcorr = zeros(size(R), 'like', R); I = 1;
@@ -740,32 +665,6 @@ for i = 2:size(R,2)
 end
 Rcorr = Rcorr(:,1:I);
 end
-
-% % Remove angles that would produce duplicate rotational matrices (4D data)
-% function Rcorr = DupAngleRmv4D(R)
-% % Check for unique rotational matrices
-% Rcorr = zeros(size(R), 'like', R);
-% eulcheck = zeros(size(R,1), size(R,1), size(R,2), size(R,3), size(R,4), 'like', R);
-% RM = zeros(size(R,1), size(R,1), size(R,2), size(R,3), size(R,4), 'like', R);
-% 
-% RM(1,:,:,:,:) = [cosd(R(2,:,:,:)).*cosd(R(3,:,:,:)); sind(R(1,:,:,:)).*sind(R(2,:,:,:)).*cosd(R(3,:,:,:))-cosd(R(1,:,:,:)).*sind(R(3,:,:,:)); cosd(R(1,:,:,:)).*sind(R(2,:,:,:)).*cosd(R(3,:,:,:))+sind(R(1,:,:,:)).*sind(R(3,:,:,:))];
-% RM(2,:,:,:,:) = [cosd(R(2,:,:,:)).*sind(R(3,:,:,:)); sind(R(1,:,:,:)).*sind(R(2,:,:,:)).*sind(R(3,:,:,:))+cosd(R(1,:,:,:)).*cosd(R(3,:,:,:)); cosd(R(1,:,:,:)).*sind(R(2,:,:,:)).*sind(R(3,:,:,:))-sind(R(1,:,:,:)).*cosd(R(3,:,:,:))];
-% RM(3,:,:,:,:) = [-sind(R(2,:,:,:)); sind(R(1,:,:,:)).*cosd(R(2,:,:,:)); cosd(R(1,:,:,:)).*cosd(R(2,:,:,:))];
-% 
-% for i = 2:size(R,2)
-%     for j = 1:size(R,3)
-%         for k = 1:size(R,4)
-%             % Check if rotational matrix is equal to any others already included
-%             if all(sum(abs(eulcheck - RM(:,:,i,j,k)), [1 2]) ~= 0, 'all') && all(sum(abs(eulcheck + RM(:,:,i,j,k)), [1 2]) ~= 0, 'all')
-%                 eulcheck(:,:,i,j,k) = RM(:,:,i,j,k);
-%                 Rcorr(:,i,j,k) = R(:,i,j,k);
-%             else
-%                 Rcorr(:,i,j,k) = NaN(3,1);
-%             end
-%         end
-%     end
-% end
-% end
 
 % Transform image & convert to 2D mask
 function [msk] = Trans2Mask(i_test, R, Rin, method, th, B)
@@ -808,51 +707,137 @@ end
 msk = (msk - min(msk,[],[1 2]))./max(msk,[],[1 2]);
 end
 
-% Evaluate transformations
-function [met, dsc, RMSE] = TransEval(m_tran, m_true)
-m_true = repmat(m_true, [1 1 size(m_tran,3)]);
-
-% RMSE
-RMSE = sqrt(squeeze(sum((m_true - m_tran).^2,[1 2]))./(size(m_tran,1)*size(m_tran,2)));
-
-% dice parameters
-m_tran = m_tran > 0; m_true = m_true > 0;
-area_i = squeeze(sum(m_tran.*m_true, [1 2]));
-area_t = (squeeze(sum(m_tran, [1 2])) + squeeze(sum(m_true, [1 2])));
-
-% dice
-dsc = 2.*area_i./area_t;
-
-met = dsc - RMSE;
-end
-
-% Custom version of 'imwarp()'; more efficient & works better w/ GPU
-function outputImage = imwarpcustom(inputImage, Rin, tform, method, Rout)
-
-% Define affine transformation that maps from intrinsic system of output image to world system of output image.
-tIntrinsictoWorldOutput = Rout.TransformIntrinsicToWorld;
-
-% Define affine transformation that maps from world system of input image to intrinsic system of input image.
-tWorldToIntrinsicInput = Rin.TransformWorldToIntrinsic;
-
-% Form transformation to go from output intrinsic to input intrinsic.
-% NOTE: tComp is in post-multiply form.
-tComp = tIntrinsictoWorldOutput/tform.A'*tWorldToIntrinsicInput; %tComp = Rout.TransformIntrinsicToWorld/tform.A'*Rin.TransformWorldToIntrinsic;
-tComp(:,4)=[0 0 0 1]; % avoid round off issues due to inversion above
-
-% Find the transform that takes from input intrinsic to output intrinsic
-tformComposite = affinetform3d(tComp');
-
-% Form plaid grid of intrinsic points in output image.
-[dstXIntrinsic,dstYIntrinsic,dstZIntrinsic] = meshgrid(1:Rout.ImageSize(2), 1:Rout.ImageSize(1), 1:Rout.ImageSize(3));
-[srcXIntrinsic,srcYIntrinsic, srcZIntrinsic] = transformPointsForward(tformComposite, dstXIntrinsic,dstYIntrinsic, dstZIntrinsic);
-
-% Interpolate to produce transformed image
-outputImage = interp3(inputImage,srcXIntrinsic,srcYIntrinsic,srcZIntrinsic,method);
-
-% Replace NaNs with zeros
-outputImage(isnan(outputImage)) = 0;
-
-% outputImage = images.internal.interp3d(inputImage,srcXIntrinsic,srcYIntrinsic,srcZIntrinsic,method,fillValues, SmoothEdges);
-% works in a similar manner as interp3 when smoothing is turned off except it automatically replaces NaNs w/ zeros
-end
+% % Remove angles that would produce duplicate rotational matrices (4D data)
+% function Rcorr = DupAngleRmv4D(R)
+% % Check for unique rotational matrices
+% Rcorr = zeros(size(R), 'like', R);
+% eulcheck = zeros(size(R,1), size(R,1), size(R,2), size(R,3), size(R,4), 'like', R);
+% RM = zeros(size(R,1), size(R,1), size(R,2), size(R,3), size(R,4), 'like', R);
+% 
+% RM(1,:,:,:,:) = [cosd(R(2,:,:,:)).*cosd(R(3,:,:,:)); sind(R(1,:,:,:)).*sind(R(2,:,:,:)).*cosd(R(3,:,:,:))-cosd(R(1,:,:,:)).*sind(R(3,:,:,:)); cosd(R(1,:,:,:)).*sind(R(2,:,:,:)).*cosd(R(3,:,:,:))+sind(R(1,:,:,:)).*sind(R(3,:,:,:))];
+% RM(2,:,:,:,:) = [cosd(R(2,:,:,:)).*sind(R(3,:,:,:)); sind(R(1,:,:,:)).*sind(R(2,:,:,:)).*sind(R(3,:,:,:))+cosd(R(1,:,:,:)).*cosd(R(3,:,:,:)); cosd(R(1,:,:,:)).*sind(R(2,:,:,:)).*sind(R(3,:,:,:))-sind(R(1,:,:,:)).*cosd(R(3,:,:,:))];
+% RM(3,:,:,:,:) = [-sind(R(2,:,:,:)); sind(R(1,:,:,:)).*cosd(R(2,:,:,:)); cosd(R(1,:,:,:)).*cosd(R(2,:,:,:))];
+% 
+% for i = 2:size(R,2)
+%     for j = 1:size(R,3)
+%         for k = 1:size(R,4)
+%             % Check if rotational matrix is equal to any others already included
+%             if all(sum(abs(eulcheck - RM(:,:,i,j,k)), [1 2]) ~= 0, 'all') && all(sum(abs(eulcheck + RM(:,:,i,j,k)), [1 2]) ~= 0, 'all')
+%                 eulcheck(:,:,i,j,k) = RM(:,:,i,j,k);
+%                 Rcorr(:,i,j,k) = R(:,i,j,k);
+%             else
+%                 Rcorr(:,i,j,k) = NaN(3,1);
+%             end
+%         end
+%     end
+% end
+% end
+% 
+% % Assuming both inputs are same FOV, decreases resolution of first image to match that of second image
+% function img_newres = Downscale3D(img_oldres, imsize)
+% dimlen = size(img_oldres); % find image size
+% 
+% % Check if input is square
+% if min(dimlen) ~= max(dimlen)
+% 
+%     % Find size difference
+%     diff = max(dimlen) - min(dimlen); diff1 = floor(diff/2);
+% 
+%     % Check if difference is odd (if so, remove extra from one side)
+%     extra = rem(diff, 2);
+% 
+%     % Trim FOV
+%     [~, Mdim] = max(dimlen);
+%     if Mdim == 1
+%         if dimlen(2) == dimlen(1)
+%             img_oldres = img_oldres(1+diff1:dimlen-diff1-extra, 1+diff1:dimlen-diff1-extra, :);
+%         elseif dimlen(3) == dimlen(1)
+%             img_oldres = img_oldres(1+diff1:dimlen-diff1-extra, :, 1+diff1:dimlen-diff1-extra);
+%         else
+%             img_oldres = img_oldres(1+diff1:dimlen-diff1-extra, :, :);
+%         end
+%     elseif Mdim == 2
+%         if dimlen(1) == dimlen(2)
+%             img_oldres = img_oldres(1+diff1:dimlen-diff1-extra, 1+diff1:dimlen-diff1-extra, :);
+%         elseif dimlen(3) == dimlen(2)
+%             img_oldres = img_oldres(:, 1+diff1:dimlen-diff1-extra, 1+diff1:dimlen-diff1-extra);
+%         else
+%             img_oldres = img_oldres(:, 1+diff1:dimlen-diff1-extra, :);
+%         end
+%     else % Mdim ==
+%         if dimlen(1) == dimlen(3)
+%             img_oldres = img_oldres(1+diff1:dimlen-diff1-extra, :, 1+diff1:dimlen-diff1-extra);
+%         elseif dimlen(2) == dimlen(3)
+%             img_oldres = img_oldres(:, 1+diff1:dimlen-diff1-extra, 1+diff1:dimlen-diff1-extra);
+%         else
+%             img_oldres = img_oldres(:, :, 1+diff1:dimlen-diff1-extra);
+%         end
+%     end
+% end
+% 
+% dimlen = size(img_oldres,1); % find image size
+% 
+% kspace = ifftshift(fftn(ifftshift(img_oldres))); % kspace of og data
+% 
+% % Find size difference
+% diff = size(img_oldres, 1) - imsize(1); diff1 = floor(diff/2);
+% 
+% % Check if difference is odd (if so, remove extra from one side)
+% extra = rem(diff, 2);
+% 
+% % Decrease resolution
+% kspace = kspace(1+diff1:dimlen-diff1-extra, 1+diff1:dimlen-diff1-extra, 1+diff1:dimlen-diff1-extra);
+% 
+% % Convert from FD
+% img_newres = abs(fftshift(ifftn(fftshift(kspace))));
+% end
+% 
+% % Assuming both inputs are same FOV, decreases resolution of first image to match that of second image
+% function img_newres = Downscale2D(img_oldres, imsize)
+% dimlen = size(img_oldres,1); % find image size
+% 
+% kspace = ifftshift(fftn(ifftshift(img_oldres))); % kspace of og data
+% 
+% % Find size difference
+% diff = size(img_oldres, 1) - imsize(1); diff1 = floor(diff/2);
+% 
+% % Check if difference is odd (if so, remove extra from one side)
+% extra = rem(diff, 2);
+% 
+% % Decrease resolution
+% kspace = kspace(1+diff1:dimlen-diff1-extra, 1+diff1:dimlen-diff1-extra, :);
+% 
+% % Convert from FD
+% img_newres = abs(fftshift(ifftn(fftshift(kspace))));
+% end
+% 
+% % Custom version of 'imwarp()'; more efficient & works better w/ GPU
+% function outputImage = imwarpcustom(inputImage, Rin, tform, method, Rout)
+% 
+% % Define affine transformation that maps from intrinsic system of output image to world system of output image.
+% tIntrinsictoWorldOutput = Rout.TransformIntrinsicToWorld;
+% 
+% % Define affine transformation that maps from world system of input image to intrinsic system of input image.
+% tWorldToIntrinsicInput = Rin.TransformWorldToIntrinsic;
+% 
+% % Form transformation to go from output intrinsic to input intrinsic.
+% % NOTE: tComp is in post-multiply form.
+% tComp = tIntrinsictoWorldOutput/tform.A'*tWorldToIntrinsicInput; %tComp = Rout.TransformIntrinsicToWorld/tform.A'*Rin.TransformWorldToIntrinsic;
+% tComp(:,4)=[0 0 0 1]; % avoid round off issues due to inversion above
+% 
+% % Find the transform that takes from input intrinsic to output intrinsic
+% tformComposite = affinetform3d(tComp');
+% 
+% % Form plaid grid of intrinsic points in output image.
+% [dstXIntrinsic,dstYIntrinsic,dstZIntrinsic] = meshgrid(1:Rout.ImageSize(2), 1:Rout.ImageSize(1), 1:Rout.ImageSize(3));
+% [srcXIntrinsic,srcYIntrinsic, srcZIntrinsic] = transformPointsForward(tformComposite, dstXIntrinsic,dstYIntrinsic, dstZIntrinsic);
+% 
+% % Interpolate to produce transformed image
+% outputImage = interp3(inputImage,srcXIntrinsic,srcYIntrinsic,srcZIntrinsic,method);
+% 
+% % Replace NaNs with zeros
+% outputImage(isnan(outputImage)) = 0;
+% 
+% % outputImage = images.internal.interp3d(inputImage,srcXIntrinsic,srcYIntrinsic,srcZIntrinsic,method,fillValues, SmoothEdges);
+% % works in a similar manner as interp3 when smoothing is turned off except it automatically replaces NaNs w/ zeros
+% end
