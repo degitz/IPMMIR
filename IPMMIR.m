@@ -20,7 +20,7 @@ W      = 20;                        % max number of while loop iterations for fi
 roipad = 20;                        % roi padding, # pixels
 th     =  0.25;                     % uCT mask threshold
 dtype  = 'image';                   % type of data to use in test. Options are 'image' and 'mask'
-tissue = 'oregano';
+tissue = 'lyle';
 
 %%% Load MRI data
 [im_name, m_name, ~, se_offset] = grmdfs(tissue, 'ssems');
@@ -273,10 +273,6 @@ for f1 = 1:F
     [~, MT_bi1] = maxk(MT(:,1), nume);
     [~, MT_bi2] = maxk(MT(:,2), nume);
 
-    % Remove close extrema
-    MT_bi1 = CloseExtrRmv(MT_bi1, RT, a(f1)*2);
-    MT_bi2 = CloseExtrRmv(MT_bi2, RT, a(f1)*2);
-
     % Combine all best FOVs into one array
     MT_bi = union(MT_bi1, MT_bi2, 'stable');
 
@@ -309,30 +305,12 @@ for f1 = 1:F
         MT_tmp = custommetrics(uct_m_testout, uct_m_testout>0, mri_m_test, mri_m_test>0, 2);
         MT(nFRi,:) = MT_tmp;
 
-        % Reset best metrics indices
-        MT_bi = [];
+        % Find best FOV
+        [~, MT_bi1] = maxk(MT(:,1), nume);
+        [~, MT_bi2] = maxk(MT(:,2), nume);
 
-        % Create temporary extrema number
-        nume_tmp = nume/1.5;
-
-        % Ensure enough extrema are isolated
-        % Note: DO NOT REMOVE OR MODIFY THE SECOND CONDITION. It is in 
-        % place to ensure this doesn't become an infinite loop.
-        while (length(MT_bi) < nume) && (nume_tmp < size(MT,1))
-            % Increase number of extrema isolated
-            nume_tmp = round(nume_tmp*1.5);
-
-            % Find best FOV
-            [~, MT_bi1] = maxk(MT(:,1), nume_tmp);
-            [~, MT_bi2] = maxk(MT(:,2), nume_tmp);
-
-            % Remove close extrema
-            MT_bi1 = CloseExtrRmv(MT_bi1, RT, a(f1)*2);
-            MT_bi2 = CloseExtrRmv(MT_bi2, RT, a(f1)*2);
-
-            % Combine all best FOVs into one array
-            MT_bi = union(MT_bi1, MT_bi2, 'stable');
-        end
+        % Combine all best FOVs into one array
+        MT_bi = union(MT_bi1, MT_bi2, 'stable');
     end
 
     % Find best FOV
@@ -342,7 +320,7 @@ for f1 = 1:F
     data.Properties.VariableNames = {'Rotation', 'Metrics'};
     fprintf('\nMaxima occurred at rotation(s) showed below:\n')
     disp(data)
-    
+
     toc
 end
 
@@ -751,38 +729,6 @@ end
 Rcorr = Rcorr(:,1:I);
 end
 
-% Remove extrema that are too close
-function MT_bi = CloseExtrRmv(MT_bi, RT, qth)
-% Initialize increment
-i1 = 1;
-
-% Begin evaluation
-while i1 < length(MT_bi)
-    % Initialize first quaternion
-    q1 = quaternion(RT(:,MT_bi(i1)).', 'eulerd', 'XYZ', 'point');
-
-    % Compare distance from other extrema
-    for i2 = (i1+1):length(MT_bi)
-        % Initialize second quaternion
-        q2 = quaternion(RT(:,MT_bi(i2)).', 'eulerd', 'XYZ', 'point');
-
-        % Calculate distance
-        qdist = dist(q1, q2)*180/pi;
-
-        % Replace with NaN if distance is less than threshold
-        if qdist < qth
-            MT_bi(i2) = NaN;
-        end
-    end
-
-    % Remove close extrema
-    MT_bi = rmmissing(MT_bi);
-
-    % Shift increment
-    i1 = i1 + 1;
-end
-end
-
 % Determine best result
 function MT_bi = IsolateBest(met, RT, nume, numE)
 % Find best (rotations which have highest DICE & RMSE)
@@ -792,33 +738,157 @@ function MT_bi = IsolateBest(met, RT, nume, numE)
 % Isolate common rotations between the two arrays
 MT_bi = intersect(MT_bi1, MT_bi2, 'stable');
 
-% Check if none meet requirements
-if isempty(MT_bi)
-    % Convert rotations to radians
-    RT_b1 = deg2rad(RT(:,MT_bi1).');
-    RT_b2 = deg2rad(RT(:,MT_bi2).');
+% Check if there are no extrema, or less than the max
+if isempty(MT_bi) || length(MT_bi) < numE
+    % Check if it is the latter case
+    if ~isempty(MT_bi)
+        % Change numE value
+        numE = numE - length(MT_bi);
+
+        % Remove already isolated extrema from arrays
+        for k = 1:length(MT_bi)
+            MT_bi1(MT_bi1 == MT_bi(k)) = [];
+            MT_bi2(MT_bi2 == MT_bi(k)) = [];
+        end
+    end
+
+    % Isolate best rotations
+    RT_b1 = RT(:,MT_bi1).';
+    RT_b2 = RT(:,MT_bi2).';
 
     % Repeat comparison matrices to allow for every combination
     RT_b1rep = repmat(RT_b1, [size(RT_b1,1), 1]);
     RT_b2rep = repmat(RT_b2, [size(RT_b1,1), 1]);
-    for k = 1:length(MT_bi1)-1
+    for k = 1:length(MT_bi1)-1 % shifts each repetition by k to allow for unique comparisons
         RT_b1rep((k-1)*size(RT_b1,1)+1:k*size(RT_b1,1),:) = circshift(RT_b1, [k 0]);
     end
 
-    % Compare rotations to identify which are closest
-    RT_comparisons = sum(abs(angdiff(RT_b1rep, RT_b2rep)),2);
+    % Compare rotations
+    RTdist = zeros(size(RT_b1rep,1), 1);
+    for k = 1:size(RT_b1rep,1)
+        % Initialize quaternions
+        q1 = quaternion(RT_b1rep(k,:), 'eulerd', 'XYZ', 'point');
+        q2 = quaternion(RT_b2rep(k,:), 'eulerd', 'XYZ', 'point');
 
-    % Isolate closest rotations
-    [~, RT_closesti] = mink(RT_comparisons, numE);
-    RT_closest = round(rad2deg(RT_b1rep(RT_closesti,:)));
+        % Calculate distance
+        RTdist(k) = dist(q1, q2)*180/pi;
+    end
 
-    % Identify index of these rotations
-    MT_bi = ismember(RT.', RT_closest, 'rows');
-    MT_bi = find(MT_bi == true);
-end
+    % Isolate closest rotation indices
+    [~, RT_closesti] = mink(RTdist, numE);
 
-if length(MT_bi) > numE
-    MT_bi = MT_bi(1:numE);
+    % Correlate to best metrics and remove duplicates
+    [~, k1, ~] = unique(RT_b1rep(RT_closesti,:), 'rows', 'stable');
+    [~, k2, ~] = unique(RT_b2rep(RT_closesti,:), 'rows', 'stable');
+
+    % Now correlate best first metric rotations to indices
+    [~, k1, ~] = intersect(RT_b1, RT_b1rep(k1,:), 'rows', 'stable');
+    [~, k2, ~] = intersect(RT_b2, RT_b2rep(k2,:), 'rows', 'stable');
+
+    % Isolate close metrics indices
+    MT_bi1 = MT_bi1(k1);
+    MT_bi2 = MT_bi2(k2);
+
+    % Append to other saved indices
+    MT_bi = [MT_bi; MT_bi1(1:ceil((numE-length(MT_bi))/2)); MT_bi2(1:floor((numE-length(MT_bi))/2))];
+
+    % Modify this code to identify closest rotations via taking the
+    % difference in quaternions. Once it finds the closest ones in the set
+    % of best indices, they are added into the array
+
+%     % Initialize first quaternion
+%     q1 = quaternion(RT(:,MT_bi(i1)).', 'eulerd', 'XYZ', 'point');
+% 
+%     % Compare distance from other extrema
+%     for i2 = (i1+1):length(MT_bi)
+%         % Initialize second quaternion
+%         q2 = quaternion(RT(:,MT_bi(i2)).', 'eulerd', 'XYZ', 'point');
+% 
+%         % Calculate distance
+%         qdist = dist(q1, q2)*180/pi;
+% 
+%         % Replace with NaN if distance is less than threshold
+%         if qdist < qth
+%             MT_bi(i2) = NaN;
+%         end
+%     end
+% 
+%     % Repeat comparison matrices to allow for every combination
+%     RT_b1rep = repmat(RT_b1, [size(RT_b1,1), 1]);
+%     RT_b2rep = repmat(RT_b2, [size(RT_b1,1), 1]);
+%     for k = 1:length(MT_bi1)-1
+%         RT_b1rep((k-1)*size(RT_b1,1)+1:k*size(RT_b1,1),:) = circshift(RT_b1, [k 0]);
+%     end
+% 
+%     % Compare rotations to identify which are closest
+%     RT_comparisons = sum(abs(angdiff(RT_b1rep, RT_b2rep)),2);
+% 
+%     % Isolate closest rotations
+%     [~, RT_closesti] = mink(RT_comparisons, numE);
+%     RT_closest = round(rad2deg(RT_b1rep(RT_closesti,:)));
+% 
+%     % Identify index of these rotations
+%     MT_bi = ismember(RT.', RT_closest, 'rows');
+%     MT_bi = find(MT_bi == true);
+% end
+% 
+% % Check if not enough extrema are isolated
+% if length(MT_bi) ~= numE
+%     % Update the number of extrema left to be isolated
+%     numE = numE - length(MT_bi);
+% 
+%     % Convert rotations to radians
+%     RT_b1 = deg2rad(RT(:,MT_bi1).');
+%     RT_b2 = deg2rad(RT(:,MT_bi2).');
+% 
+%     % Initialize counters for while loop
+%     bi_num = 1;
+%     i = 1;
+% 
+%     % Add in next best rotations for each metric
+%     while bi_num <= ceil(numE/2)
+%         % Check if value is already present in array
+%         if ~any(MT_bi == MT_bi1(i))
+%             % Add index to array
+%             MT_bi = [MT_bi; MT_bi1(i)]; %#ok<AGROW>
+% 
+%             % Increase counter
+%             bi_num = bi_num + 1;
+%         end
+% 
+%         % Increase counter
+%         i = i + 1;
+%     end
+% 
+%     % Reset counters & run again for second metric
+%     bi_num = 1;
+%     i = 1;
+%     while bi_num <= floor(numE/2)
+%         % Check if value is already present in array
+%         if ~any(MT_bi == MT_bi2(i))
+%             % Add index to array
+%             MT_bi = [MT_bi; MT_bi2(i)]; %#ok<AGROW>
+% 
+%             % Increase counter
+%             bi_num = bi_num + 1;
+%         end
+% 
+%         % Increase counter
+%         i = i + 1;
+%     end
+% 
+%     % Check if none meet requirements
+% elseif isempty(MT_bi)
+%     % Separately isolate best performing rotations for each metric
+%     [~, MT_bi1] = maxk(met(:,1), ceil(numE/2));
+%     [~, MT_bi2] = maxk(met(:,2), floor(numE/2));
+% 
+%     % Combine into one array
+%     MT_bi = [MT_bi1; MT_bi2];
+% 
+%     % Force number of extrema to required size
+% elseif length(MT_bi) > numE
+%     MT_bi = MT_bi(1:numE);
 end
 end
 
