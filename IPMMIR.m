@@ -20,7 +20,7 @@ rsval = [64, 96, 128]; % resize value
 a = [30, 10, 2, 1]; % rotation resolutions & ranges for transformation
 ar = [360, 60, 12, 6];
 numE = [5, 4, 3, 1]; % number of local extrema
-nume = 10; % number of local extrema before intersection
+nume = 30; % number of local extrema before intersection
 S = length(a); % number of iterations
 
 %%% Load MRI data
@@ -151,10 +151,10 @@ for s = 1:S
     % Create spatial referencing information
     Rin = imref3d(size(i_test_uct));
 
-    fprintf('\nTesting the following %i degree range(s) with a %i degree step size:\n', ar(s), a(s))
+    fprintf('\nTesting the following degree range(s) with a %i degree step size:\n', a(s))
 
     % Determine if any groups overlap
-    ccheck = zeros(length(B_all), 1);
+    ccheck = false(length(B_all), 1);
     Rbase = R(:,B_all); % angle base
     Rmax = Rbase + ar(s)/2; % angle max
     Rmin = Rbase - ar(s)/2; % angle min
@@ -171,14 +171,14 @@ for s = 1:S
         rz = ((R(3,B_all(m))-ar(s)/2):a(s):(R(3,B_all(m))+ar(s)/2));
 
         % Skips for overlapping groups
-        if ccheck(m) == 1
+        if ccheck(m) == true
             continue
         end
 
         if m < length(B_all)
             for l = 1:(length(B_all)-m)
                 % Skip checks with already combined groups
-                if ccheck(m+l) == 1
+                if ccheck(m+l) == true
                     continue
                 else
                     % Create testing variables
@@ -190,21 +190,35 @@ for s = 1:S
                     % Find advanced intersections (min/max of next group is smaller than min/max of current group) to deal with negative & 360 issues
                     % In this instance, current group starts where next group starts
                     Tint2 = Rmin(:,m+l) <= Rmin(:,m); Tint2 = (((Tint2 + (Rmax(:,m+l) <= Rmax(:,m))) > 0).*(1-Tequ)) > 0; 
-                    % Find instances where 
-
 
                     % Check for & resolve intersects
                     if sum(Tint1)+sum(Tequ) == 3
-                        rx = ((R(1,B_all(m))-ar(s)/2):a(s):(R(1,B_all(m+Tint1(1)*l))+ar(s)/2));
+                        % Update ranges
+                        rx = ((R(1,B_all(m))-ar(s)/2):a(s):(R(1,B_all(m+Tint1(1)*l))+ar(s)/2)); % start at current group, stop at next group
                         ry = ((R(2,B_all(m))-ar(s)/2):a(s):(R(2,B_all(m+Tint1(2)*l))+ar(s)/2));
                         rz = ((R(3,B_all(m))-ar(s)/2):a(s):(R(3,B_all(m+Tint1(3)*l))+ar(s)/2));
-                        ccheck(m+l) = 1;
+
+                        % Add check
+                        ccheck(m+l) = true;
+
+                        % Update evaluators 
+                        Rmax(:,m) = Rmax(:,m+l);
+                        Rbase(:,m) = ((Rmax(:,m) - Rmin(:,m))./2) + Rmin(:,m);
                     elseif sum(Tint2)+sum(Tequ) == 3
+                        % Correct for any wraps
                         corr = R(:,B_all(m+l)) - (Tint2.*360);
-                        rx = ((corr(1)-ar(s)/2):a(s):(R(1,B_all(m))+ar(s)/2));
+
+                        % Update ranges
+                        rx = ((corr(1)-ar(s)/2):a(s):(R(1,B_all(m))+ar(s)/2)); % start at next group, start at current group
                         ry = ((corr(2)-ar(s)/2):a(s):(R(2,B_all(m))+ar(s)/2));
                         rz = ((corr(3)-ar(s)/2):a(s):(R(3,B_all(m))+ar(s)/2));
-                        ccheck(m+l) = 1;
+
+                        % Add check
+                        ccheck(m+l) = true;
+
+                        % Update evaluators
+                        Rmin(:,m) = Rmin(:,m+l);
+                        Rbase(:,m) = ((Rmax(:,m) - Rmin(:,m))./2) + Rmin(:,m);
                     end
                 end
             end
@@ -256,10 +270,6 @@ for s = 1:S
     [~, B_iou] = maxk(a_iou, nume); % best iou values
     [~, B_RMSE] = mink(a_RMSE, nume); % best RMSE values
 
-    % Reset test mri data for re-evaluation
-    m_test_mri = Norm01(sum(m_fs_mri,3));
-    Rin = imref3d(size(i_fs_uct));
-
     % Recalculate values if not last iteration
     if s ~= S
         % Get all "best" values
@@ -270,6 +280,10 @@ for s = 1:S
         data.Properties.VariableNames = {'Rotation', 'dice', 'iou', 'RMSE'};
         data = sortrows(data, {'dice', 'RMSE'},{'descend', 'ascend'});
         disp(data)
+
+        % Reset test mri data for re-evaluation
+        m_test_mri = Norm01(sum(m_fs_mri,3));
+        Rin = imref3d(size(i_fs_uct));
 
         % Re-transformation & re-evalution
         % Note: "R" is used instead of "Rnew" since indices listed in "B_all" are wrt "R"
@@ -282,65 +296,12 @@ for s = 1:S
         a_iou(B_all) = ioutemp;
         a_dce(B_all) = dcetemp;
         a_RMSE(B_all) = RMSEtemp;
-    else
-        % Find overall best rotations
-        B_all = intersect(B_dce, B_iou); B_all = intersect(B_all, B_RMSE);
 
-        % Check for no intersections
-        if isempty(B_all)
-            % Create array of RMSE values for best dice/iou values
-            RMSEtemp = ones(size(a_RMSE)); RMSEtemp(B_dce) = a_RMSE(B_dce);
-
-            % Find max
-            [~, B_all] = mink(RMSEtemp, numE(s));
-        elseif length(B_all) > numE(s)
-            B_all = B_all(1:numE(s));
-        end
-
-        fprintf('\nRe-testing in 90 degree steps around the "best" alignment shown below:\n')
-        data = table(R(:,B_all).', a_dce(B_all), a_iou(B_all), a_RMSE(B_all), 'RowNames', string(B_all));
-        data.Properties.VariableNames = {'Rotation', 'dice', 'iou', 'RMSE'};
-        data = sortrows(data, {'dice', 'RMSE'},{'descend', 'ascend'});
-        disp(data)
-
-        % Obtain rotation angles
-        rx = ((R(1,B_all)-180):90:(R(1,B_all)+180));
-        ry = ((R(2,B_all)-180):90:(R(2,B_all)+180));
-        rz = ((R(3,B_all)-180):90:(R(3,B_all)+180));
-        Rx = repmat(rx, 1, 16); Rx = sort(Rx);
-        Ry = repmat(ry, 1, 4); Ry = sort(Ry); Ry = repmat(Ry, 1, 4);
-        Rz = repmat(rz, 1, 16);
-        Rnew = DupAngleRmv([Rx; Ry; Rz]);
-        Rnew(Rnew<0) = 360 + Rnew(Rnew<0); Rnew(Rnew==360) = 0;
-
-        % Re-transformation & re-evalution
-        [m_test_uct] = Trans2Mask(i_fs_uct, Rnew, Rin, 'cubic', thresh);
-
-        toc
-
-        % Evaluate new data
-        [dcetemp, ioutemp, RMSEtemp] = TransEval(m_test_uct, m_test_mri);
-        
-        % Replace metrics with new values
-        for n = 1:size(Rnew,2)
-            Rcheckx = R(1,:) == Rnew(1,n); 
-            Rchecky = R(2,:) == Rnew(2,n);
-            Rcheckz = R(3,:) == Rnew(3,n);
-            [~, Rvals] = find(Rcheckx.*Rchecky.*Rcheckz);
-
-            % Determine how to add data to dataset
-            if isempty(Rvals) % new angle, add to end
-                R(:,end+1) = Rnew(:,n); a_iou(end+1) = ioutemp(n); a_dce(end+1) = dcetemp(n); a_RMSE(end+1) = RMSEtemp(n); %#ok<SAGROW>
-            else % existing angle, replace data
-                a_iou(Rvals) = ioutemp(n); a_dce(Rvals) = dcetemp(n); a_RMSE(Rvals) = RMSEtemp(n);
-            end
-        end
+        % Find best FOV
+        [~, B_dce] = maxk(a_dce, nume); % best dice values
+        [~, B_iou] = maxk(a_iou, nume); % best iou values
+        [~, B_RMSE] = mink(a_RMSE, nume); % best RMSE values
     end
-
-    % Find best FOV
-    [~, B_dce] = maxk(a_dce, nume); % best dice values
-    [~, B_iou] = maxk(a_iou, nume); % best iou values
-    [~, B_RMSE] = mink(a_RMSE, nume); % best RMSE values
 
     % Find overall best rotations
     B_all = intersect(B_dce, B_iou); B_all = intersect(B_all, B_RMSE);
