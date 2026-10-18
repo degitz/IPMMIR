@@ -22,6 +22,8 @@ ar =    [ 360,  60,  12,   6,   2];
 numE =  [        5,   4,   3]; % number of local extrema from previous iteration to test
 S = length(a)-1; % number of iterations
 etype = 'Dice';
+etype_rs = etype;
+W = 20; % max number of while loop iterations
 
 % Add last index in numE. Just acts as placeholder as we only want 1 output angle
 numE = [numE, 1];
@@ -29,11 +31,23 @@ numE = [numE, 1];
 % Select evaluation metric
 switch etype
     case 'Dice'
-        TransEval = @dicecustom;
+        TransEval = @(v,w,x,y,z) dicecustom(v,w,x,y,z);
     case 'iRMSE'
-        TransEval = @irmsecustom;
+        TransEval = @(v,w,x,y,z) irmsecustom(v,w,x,y,z);
     case 'IoU'
-        TransEval = @ioucustom;
+        TransEval = @(v,w,x,y,z) ioucustom(v,w,x,y,z);
+    case'Dice_iRMSE'
+        TransEval = @(v,w,x,y,z) dicecustom(v,w,x,y,z)+irmsecustom(v,w,x,y,z);
+end
+switch etype_rs
+    case 'Dice'
+        SliceEval = @(v,w,x,y,z) dicecustom(v,w,x,y,z);
+    case 'iRMSE'
+        SliceEval = @(v,w,x,y,z) irmsecustom(v,w,x,y,z);
+    case 'IoU'
+        SliceEval = @(v,w,x,y,z) ioucustom(v,w,x,y,z);
+    case'Dice_iRMSE'
+        SliceEval = @(v,w,x,y,z) dicecustom(v,w,x,y,z)+irmsecustom(v,w,x,y,z);
 end
 
 %%% Load MRI data
@@ -84,26 +98,11 @@ i_fs_uct = Norm01(imresize3(i_og_uct, [size(i_fs_mri,1) size(i_fs_mri,1) size(i_
 % Keep unmasked image for final analysis
 i_fsum_uct = i_fs_uct;
 
-% Create basic mask
-m_fs_uct = i_fs_uct > thresh;
+% Create mask
+m_fs_uct = GenMask(i_fs_uct, thresh);
 
 % Apply to uCT image
-i_fs_uct = i_fs_uct.*m_fs_uct;
-
-% Identify each connected region in image
-CC = bwconncomp(i_fs_uct);
-
-% Isolates largest region
-[~,idx] = max(cellfun(@numel,CC.PixelIdxList)); 
-
-% Create binary mask of only that region
-m_fs_uct = false(size(i_fs_uct));
-m_fs_uct(CC.PixelIdxList{idx}) = true;
-
-% Apply to uCT image
-i_fs_uct = i_fs_uct.*m_fs_uct;
-
-clear CC idx
+i_fs_uct = i_fsum_uct.*m_fs_uct;
 
 %% Trim ROI
 m_fs_mri = ROITrim(m_fs_mri, roipad);
@@ -225,10 +224,6 @@ for s = 1:S
         fprintf("      (%i, %i, %i) to (%i, %i, %i)\n", r(1), r(2), r(3), r(4), r(5), r(6))
     end
 
-    % Correct for negative values & +360 values
-    Rnew(Rnew<0) = Rnew(Rnew<0) + 360;
-    Rnew(Rnew>=360) = Rnew(Rnew>=360) - 360;
-
     % Add to old angles & remove duplicates
     if s == 1
         Rnew = DupAngleRmv(Rnew); R = Rnew;
@@ -296,82 +291,90 @@ for s = 1:S
 end
 
 %% Final Phase
-B_R_old = R(:,Bi_met);
 
 % Reset test mri data for final evaluation
-m_test_mri = Norm01(sum(m_fs_mri,3));
+B_R_old = R(:,Bi_met);
+R2 = B_R_old;
+Bi_met = 1;
+m_test_mri = m_fs_mri; i_test_mri = i_fs_mri;
 Rin = imref3d(size(i_fs_uct));
+I = 1; % index
+w = 0; % while loop index
+
+% Calculate metric for resliced data of current rotation
+tform = affinetform3d(rigidtform3d(squeeze(B_R_old.'), [0 0 0]));
+% i_temp = imwarpcustom(i_fs_uct, Rin, tform, 'cubic', affineOutputView(size(i_fsum_uct), tform, "BoundsStyle","CenterOutput"));
+i_temp = imwarp(i_fs_uct, Rin, tform, 'cubic', "OutputView", affineOutputView(size(i_fs_uct), tform, "BoundsStyle","CenterOutput"));
+if any(size(i_temp) ~= size(i_fs_uct)); i_temp = ROITrim(i_temp, size(i_fs_uct)); end
+i_temp = Norm01(i_temp);
+m_temp = GenMask(i_temp, thresh);
+[i_temp, m_temp, ~, ~] = CT_reslicer(i_temp, m_temp, i_test_mri, m_test_mri, 1/res, etype_rs);
+mettemp = SliceEval(i_temp, m_temp, i_test_mri, m_test_mri, 3);
+rs_met = mean(mettemp);
 
 % While loop that repeatedly checks the area around the "best" alignment until it stops moving
 B_R = [-5; -5; -5]; % set the maxima to something that would never occur
 fprintf('\n--------------------------- Phase %i ---------------------------\n', s+1)
-fprintf('Testing the volume around the maxima in a %i degree radius.\nThis will repeatedly occur until the maxima stops moving.\nmetric @ current maxima:\n', ar(end)/2)
-while any(B_R ~= R(:,Bi_met))
-    B_R = R(:,Bi_met);
-    fprintf('%.4f @ (%i, %i, %i)\n', a_met(Bi_met), B_R(1), B_R(2), B_R(3))
+fprintf('Testing the resliced volume around the maxima in a %i degree radius.\nThis will repeatedly occur until the maxima stops moving. %s @ current maxima:\n', ar(end)/2, etype_rs)
+fprintf('%.4f @ (%i, %i, %i)\n', rs_met, R2(1), R2(2), R2(3))
+while any(B_R ~= R2(:,Bi_met)) && (w < W)
+    B_R = R2(:,Bi_met);
 
     % Obtain rotation angles
-    Rint = GenAngles(R(:,Bi_met), a(end), ar(end));
+    Rnew = GenAngles(R2(:,Bi_met), a(end), ar(end));
 
-    % Correct for negative values & 360 values
-    Rint(Rint<0) = 360 + Rint(Rint<0);
-    Rint(Rint==360) = 0;
+    % Identify new angles
+    Rold = R2;
+    R2 = DupAngleRmv(horzcat(R2, Rnew));
+    Rnew = R2(:, (size(Rold,2)+1):end); % new angles
 
-    % First, identify new angles
-    Rnew = Rint; Rold = R;
-    R = DupAngleRmv(horzcat(R, Rnew));
-    Rnew1 = R(:, (size(Rold,2)+1):end); % new angles
-
-    % Next, identify angles that need to be retested
-    [~,Rinti,~] = intersect(R.', Rint.', 'rows'); Rinti = Rinti.';
-    fri = find(fr == false);
-    Rnewi = intersect(Rinti, fri);
-    Rnew2 = R(:,Rnewi); % angles needing to be retested
+    % Preallocate data
+    rs_met = [rs_met; zeros(size(Rnew,2),1)];  %#ok<AGROW>
 
     % Test new angles
-    if ~isempty(Rnew1)
-        % Transform uCT data
-        [m_test_uct] = Trans2Mask(i_fs_uct, Rnew1, Rin, 'cubic', thresh);
+    for i = 1:size(Rnew,2)
+        I = I + 1;
 
-        % Update full-resolution check
-        fr = [fr; true(size(m_test_uct,3), 1)]; %#ok<AGROW>
+        % Transform image & create mask
+        tform = affinetform3d(rigidtform3d(squeeze(Rnew(:,i).'), [0 0 0]));
+        % i_temp = imwarpcustom(i_fs_uct, Rin, tform, 'cubic', affineOutputView(size(i_test), tform, "BoundsStyle","CenterOutput"));
+        i_temp = imwarp(i_fs_uct, Rin, tform, 'cubic', "OutputView", affineOutputView(size(i_fs_uct), tform, "BoundsStyle","CenterOutput"));
+        if any(size(i_temp) ~= size(i_fs_uct)); i_temp = ROITrim(i_temp, size(i_fs_uct)); end
+        i_temp = Norm01(i_temp);
+        m_temp = GenMask(i_temp, thresh);
 
-        % Evaluate rotatated FOV
-        [mettemp] = TransEval(m_test_uct, m_test_uct>0, m_test_mri, m_test_mri>0, 2);
-        a_met = [a_met; mettemp]; %#ok<AGROW>
-    end
+        % Reslice microCT data
+        [i_temp, m_temp, ~, ~] = CT_reslicer(i_temp, m_temp, i_test_mri, m_test_mri, 1/res, etype_rs);
 
-    % Retest existing angles
-    if ~isempty(Rnew2)
-        % Transform uCT data
-        [m_test_uct] = Trans2Mask(i_fs_uct, Rnew2, Rin, 'cubic', thresh);
-    
-        % Update full-resolution check
-        fr(Rnewi) = true(size(m_test_uct,3), 1); %#ok<SAGROW>
-    
-        % Evaluate rotatated FOV
-        [mettemp] = TransEval(m_test_uct, m_test_uct>0, m_test_mri, m_test_mri>0, 2);
-        a_met(Rnewi) = mettemp; %#ok<SAGROW>
+        % Evaluate
+        rs_met(I) = SliceEval(i_temp, m_temp, i_test_mri, m_test_mri, 3);
     end
 
     % Find best FOV
-    [~, Bi_met] = maxk(a_met, numE(end));
+    [~, Bi_met] = maxk(rs_met, numE(end));
+    fprintf('%.4f @ (%i, %i, %i)\n', rs_met(Bi_met), R2(1,Bi_met), R2(2,Bi_met), R2(3,Bi_met))
+
+    w = w + 1;
 end
 
-fprintf('\nFinal orientation: (%i, %i, %i)\n', R(1,Bi_met), R(2,Bi_met), R(3,Bi_met));
+if w >= W
+    fprintf('\nThe program could not converge within a reasonable time. Please make modifications and try again.\n')
+end
+
+fprintf('\nFinal orientation: (%i, %i, %i)\n', R2(1,Bi_met), R2(2,Bi_met), R2(3,Bi_met));
 
 toc
 
 %% Show best FOV
 % For display
 B = Bi_met;
-tform = affinetform3d(rigidtform3d(squeeze(R(:,B).'), [0 0 0]));
+tform = affinetform3d(rigidtform3d(squeeze(R2(:,B).'), [0 0 0]));
 
 % Create MRI & uCT images for display
 i_finalum_uct = imwarp(i_fsum_uct, imref3d(size(i_fsum_uct)), tform, 'cubic', "OutputView", affineOutputView(size(i_fsum_uct), tform, "BoundsStyle","CenterOutput"));
 if any(size(i_finalum_uct) ~= size(i_fsum_uct)); i_temp = ROITrim(i_finalum_uct, size(i_fsum_uct)); end
-m_final_uct = i_finalum_uct > thresh;
-m_final_uct = imfill(m_final_uct, 'holes');
+i_finalum_uct = Norm01(i_finalum_uct);
+m_final_uct = GenMask(i_finalum_uct, thresh);
 i_final_uct = i_finalum_uct.*m_final_uct;
 m_disp_uct = Norm01(sum(m_final_uct, 3));
 i_disp_uct = Norm01(sum(i_final_uct, 3));
@@ -415,35 +418,34 @@ imagesc(imfuse(i_disp_mri, i_disp_uct)); axis square; axis off; title('Image Ove
 title(f3, '2D Images')
 
 %% Reslicing
-fprintf('\n--------------------------- Phase %i ---------------------------\n', s+2)
-fprintf('Pooling microCT slices into groups that correspond to MRI slices.\n')
 
 % Reslice microCT data
-[i_finaltrue_uct, m_finaltrue_uct, Bpix, Bofs] = CT_reslicer(i_final_uct, m_final_uct, i_fs_mri, m_fs_mri, 1/res, 'Dice');
+[i_finaltrue_uct, m_finaltrue_uct, Bpix, Bofs] = CT_reslicer(i_final_uct, m_final_uct, i_fs_mri, m_fs_mri, 1/res, etype_rs);
 
 plotmygraph(i_fs_mri, 'MRI Images'); plotmygraph(i_finaltrue_uct, 'microCT Images')
 figure('Name', 'finali', 'NumberTitle', 'off'); f4 = tiledlayout('flow', 'TileSpacing', 'compact', 'Padding', 'compact');
 for i = 1:size(i_fs_mri,3)
     nexttile
-    imagesc(imfuse(i_fs_mri(:,:,i), i_finaltrue_uct(:,:,i))); axis square; axis off; title("dice = "+num2str(a_met(i)));
+    imagesc(imfuse(i_fs_mri(:,:,i), i_finaltrue_uct(:,:,i))); axis square; axis off; title(num2str(i));
 end
 hold on; legend([scatter([],[],10,[0 1 0],'filled') scatter([],[],10,[1 0 1],'filled')],{'MRI','uCT'}); hold off;
-title(f4, 'Image Slices')
+title(f4, "Image Slices, poff = "+num2str(Bpix)+", soff = "+num2str(Bofs))
 
 plotmygraph(m_fs_mri, 'MRI Masks'); plotmygraph(m_finaltrue_uct, 'microCT Masks')
 figure('Name', 'finalm', 'NumberTitle', 'off'); f5 = tiledlayout('flow', 'TileSpacing', 'compact', 'Padding', 'compact');
 for i = 1:size(m_fs_mri,3)
     nexttile
-    imagesc(imfuse(m_fs_mri(:,:,i), m_finaltrue_uct(:,:,i))); axis square; axis off; title("dice = "+num2str(a_met(i)));
+    imagesc(imfuse(m_fs_mri(:,:,i), m_finaltrue_uct(:,:,i))); axis square; axis off; title(num2str(i));
 end
 hold on; legend([scatter([],[],10,[0 1 0],'filled') scatter([],[],10,[1 0 1],'filled')],{'MRI','uCT'}); hold off;
-title(f5, 'Mask Slices')
+title(f5, "Mask Slices, poff = "+num2str(Bpix)+", soff = "+num2str(Bofs))
 
 %%
-fprintf(['\n\nslice offset: ', num2str(Bofs)])
-fprintf(['\npixel offset: ', num2str(Bpix)])
-fprintf(['\ndice 2D: ', num2str(dicecustom(i_disp_uct, m_disp_uct>0, i_disp_mri, m_disp_mri>0, 2))])
-fprintf(['\nRMSE 2D: ',num2str(-1*irmsecustom(i_disp_uct, m_disp_uct>0, i_disp_mri, m_disp_mri>0, 2)), '\n'])
+fprintf(['\n\ndice 2D: ', num2str(dicecustom(i_disp_uct, m_disp_uct>0, i_disp_mri, m_disp_mri>0, 2))])
+fprintf(['\ndice 3D: ',num2str(dicecustom(i_finaltrue_uct, m_finaltrue_uct, i_fs_mri, m_fs_mri, 3))])
+fprintf(['\nRMSE 2D: ',num2str(-1*irmsecustom(i_disp_uct, m_disp_uct>0, i_disp_mri, m_disp_mri>0, 2))])
+fprintf(['\nRMSE 3D: ',num2str(-1*irmsecustom(i_finaltrue_uct, m_finaltrue_uct, i_fs_mri, m_fs_mri, 3)), '\n'])
+
 %% Functions
 
 % Centers 2D & 3D data
@@ -491,6 +493,28 @@ end
 % Normalize input data to range of 0-1
 function X = Norm01(x)
 X = (x - min(x,[],'all'))./max(x,[],'all');
+end
+
+% Generate binary mask
+function m = GenMask(img, th)
+% Create basic mask
+m = img > th;
+
+% Apply to uCT image
+img = img.*m;
+
+% Identify each connected region in image
+CC = bwconncomp(m);
+
+% Isolates largest region
+[~,idx] = max(cellfun(@numel,CC.PixelIdxList)); 
+
+% Create binary mask of only that region
+m = false(size(img));
+m(CC.PixelIdxList{idx}) = true;
+
+% Fill any holes in mask
+m = imfill(m, 6, "holes");
 end
 
 % Trim image down to specified size. Buff is either equal padding on all axis, or dimension size that roi should be padded to
@@ -634,6 +658,10 @@ end
 
 % Remove angles that would produce duplicate rotational matrices
 function Rcorr = DupAngleRmv(R)
+% First, correct for negative values & +360 values
+R(R<0) = R(R<0) + 360;
+R(R>=360) = R(R>=360) - 360;
+
 Rcorr = zeros(size(R), 'like', R); I = 1;
 eulcheck = zeros(size(R,1), size(R,1), size(R,2), 'like', R);
 RM = zeros(size(R,1), size(R,1), size(R,2), 'like', R);
